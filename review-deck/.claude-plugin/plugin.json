@@ -1,7 +1,7 @@
 {
   "name": "review-deck",
-  "version": "0.1.0",
-  "description": "Turn any git diff into an interactive, self-contained HTML code review page with AI explanatory notes and user commenting, backed by a persistent .code-review/ directory for a two-way review loop.",
+  "version": "0.4.0",
+  "description": "Turn any git diff into an interactive, self-contained HTML code review page with an AI-written overview, mermaid flow diagrams, explanatory notes and user commenting — plus a cross-project hub listing every review, backed by a persistent .code-review/ directory for a two-way review loop.",
   "author": {
     "name": "Kamil Pińkowski",
     "email": "kpinks@pm.me"

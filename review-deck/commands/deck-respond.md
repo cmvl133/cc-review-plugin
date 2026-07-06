@@ -29,6 +29,8 @@ Process the user's comments from the most recent review-deck round and close the
 
 Read every section. Ignore `resolved: yes` comments except to note how many were already resolved.
 
+If a `## dismissed AI notes` section is present, treat those notes as **explicitly closed by the user**: do not address them, do not fix what they describe, do not argue for them — only count them in the final summary. They also must not be re-raised in later review rounds.
+
 ## 3. Respond to each unresolved comment
 
 For each unresolved comment, in file order:
@@ -40,5 +42,5 @@ For each unresolved comment, in file order:
 
 ## 4. Close the loop
 
-- Summarize: how many comments were addressed with code changes, answered only, or deferred.
+- Summarize: how many comments were addressed with code changes, answered only, or deferred (and how many AI notes the user dismissed, if any).
 - Offer to run `/deck-review` again to generate the next review round (the new page will carry over any comments still unresolved, flagged "from previous round").

@@ -10,6 +10,11 @@ CLI:
                   [--prev-comments comments.user.md ...]
                   [--notes-md notes.ai.md] [--title TITLE] [--review-id ID]
                   [--ensure-gitignore REPO_ROOT]
+
+If notes.ai.json carries an "overview" object (intro markdown + optional
+mermaid diagrams), it renders at the top of the page; when diagrams are
+present the vendored assets/mermaid.min.js is inlined so the page stays
+fully offline.
 """
 
 import argparse
@@ -21,6 +26,7 @@ import sys
 from pathlib import Path
 
 SEVERITIES = ("info", "suggestion", "warning")
+MERMAID_ASSET = Path(__file__).resolve().parent.parent / "assets" / "mermaid.min.js"
 
 # ---------------------------------------------------------------------------
 # Unified diff parsing
@@ -190,6 +196,183 @@ def resolve_anchor(fd, hunk_index, anchor):
     return None
 
 
+def resolve_line(fd, line):
+    """Resolve a plain file line number (external-tool style anchoring) to
+    (hunk_idx0, line_idx). New-file numbering first, old-file (deleted
+    lines) as fallback."""
+    if not isinstance(line, int) or isinstance(line, bool):
+        return None
+    for hi, h in enumerate(fd.hunks):
+        for li, ln in enumerate(h.lines):
+            if ln.kind != "meta" and ln.new_no == line:
+                return (hi, li)
+    for hi, h in enumerate(fd.hunks):
+        for li, ln in enumerate(h.lines):
+            if ln.kind == "del" and ln.old_no == line:
+                return (hi, li)
+    return None
+
+
+def resolve_entry(fd, entry):
+    """Anchor an entry (note / tour step / checklist item) by content
+    anchor first, then by its "line" number."""
+    pos = resolve_anchor(fd, entry.get("hunk_index"),
+                         entry.get("anchor_line_content", ""))
+    if pos is None:
+        pos = resolve_line(fd, entry.get("line"))
+    return pos
+
+
+# ---------------------------------------------------------------------------
+# Intraline (word-level) diff: for paired del/add lines, find the changed
+# char range via common prefix/suffix. Ranges are emitted as data attributes
+# and highlighted client-side after tokenization.
+# ---------------------------------------------------------------------------
+
+def intraline_ranges(hunk):
+    """Return {line_idx: (start, end)} of changed char ranges for lines in
+    paired del/add blocks (k-th del paired with k-th add)."""
+    res = {}
+    lines = hunk.lines
+    i = 0
+    while i < len(lines):
+        if lines[i].kind != "del":
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and lines[j].kind == "del":
+            j += 1
+        k = j
+        while k < len(lines) and lines[k].kind == "add":
+            k += 1
+        for m in range(min(j - i, k - j)):
+            a, b = lines[i + m].text, lines[j + m].text
+            if a == b or not a or not b:
+                continue
+            p = 0
+            while p < min(len(a), len(b)) and a[p] == b[p]:
+                p += 1
+            s = 0
+            while (s < min(len(a), len(b)) - p
+                   and a[len(a) - 1 - s] == b[len(b) - 1 - s]):
+                s += 1
+            if p + s == 0:
+                continue  # lines share nothing — not a small edit
+            if p < len(a) - s:
+                res[i + m] = (p, len(a) - s)
+            if p < len(b) - s:
+                res[j + m] = (p, len(b) - s)
+        i = max(k, i + 1)
+    return res
+
+
+# ---------------------------------------------------------------------------
+# Contrib fragments: external setups (workflows, hooks, CI, linters) drop
+# JSON files with any subset of {notes, triage, tour, checklist, overview}
+# into .code-review/<branch>/contrib/. They are merged into the main notes
+# document and tagged with their source name. See INTEGRATIONS.md.
+# ---------------------------------------------------------------------------
+
+CHECK_STATUSES = ("done", "partial", "missing")
+
+
+def validate_fragment(doc):
+    """Return (errors, warnings) for a notes-document fragment. Errors mark
+    entries the merge would skip; warnings are quality issues (renders
+    unanchored, unknown enum values coerced)."""
+    errors, warnings = [], []
+    if not isinstance(doc, dict):
+        return (["fragment is not a JSON object"], [])
+    for key in ("notes", "triage", "tour", "checklist"):
+        val = doc.get(key, [])
+        if not isinstance(val, list):
+            errors.append("%s: must be an array" % key)
+            continue
+        for i, e in enumerate(val):
+            where = "%s[%d]" % (key, i)
+            if not isinstance(e, dict):
+                errors.append("%s: not an object" % where)
+                continue
+            if key in ("notes", "triage", "tour") and not e.get("file"):
+                errors.append('%s: missing "file"' % where)
+            if key == "notes":
+                if e.get("severity") not in SEVERITIES:
+                    warnings.append('%s: unknown severity %r (treated as info)'
+                                    % (where, e.get("severity")))
+                if not e.get("anchor_line_content") and not isinstance(e.get("line"), int):
+                    warnings.append('%s: no "anchor_line_content" or "line" — renders unanchored'
+                                    % where)
+            if key == "triage" and e.get("attention") not in ATTENTIONS:
+                errors.append("%s: attention must be one of %s" % (where, "/".join(ATTENTIONS)))
+            if key == "checklist":
+                if not e.get("item"):
+                    errors.append('%s: missing "item"' % where)
+                if e.get("status") not in CHECK_STATUSES:
+                    warnings.append("%s: unknown status %r (treated as partial)"
+                                    % (where, e.get("status")))
+    ov = doc.get("overview")
+    if ov is not None and not isinstance(ov, dict):
+        errors.append("overview: must be an object")
+    return (errors, warnings)
+
+
+def load_contribs(paths):
+    """Load contrib fragment files; returns [(source_name, doc)]."""
+    out = []
+    for p in paths:
+        path = Path(p)
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            print("warning: skipping contrib %s: %s" % (p, e), file=sys.stderr)
+            continue
+        errors, _ = validate_fragment(doc)
+        if errors:
+            print("warning: contrib %s has %d invalid entrie(s) (skipped): %s"
+                  % (p, len(errors), "; ".join(errors[:3])), file=sys.stderr)
+        name = doc.get("source") if isinstance(doc, dict) else None
+        out.append((name or path.name.split(".")[0], doc if isinstance(doc, dict) else {}))
+    return out
+
+
+def merge_contribs(notes_doc, contribs):
+    """Merge contrib fragments into the main notes document (in place).
+    Notes and checklist items are appended and tagged with their source;
+    triage fills only files the main document didn't classify; overview and
+    tour are taken from a contrib only when the main document has none."""
+    merged_notes = 0
+    for name, doc in contribs:
+        for i, n in enumerate(x for x in doc.get("notes", [])
+                              if isinstance(x, dict) and x.get("file")):
+            n = dict(n)
+            n["_source"] = name
+            if not n.get("id"):
+                n["id"] = "%s-%03d" % (name, i + 1)
+            if n.get("severity") not in SEVERITIES:
+                n["severity"] = "info"
+            notes_doc.setdefault("notes", []).append(n)
+            merged_notes += 1
+        have = {t.get("file") for t in notes_doc.get("triage", [])}
+        for t in doc.get("triage", []):
+            if (isinstance(t, dict) and t.get("file") and t["file"] not in have
+                    and t.get("attention") in ATTENTIONS):
+                notes_doc.setdefault("triage", []).append(t)
+                have.add(t["file"])
+        for c in doc.get("checklist", []):
+            if isinstance(c, dict) and c.get("item"):
+                c = dict(c)
+                c["_source"] = name
+                if c.get("status") not in CHECK_STATUSES:
+                    c["status"] = "partial"
+                notes_doc.setdefault("checklist", []).append(c)
+        if isinstance(doc.get("overview"), dict) and not notes_doc.get("overview"):
+            notes_doc["overview"] = doc["overview"]
+        if doc.get("tour") and not notes_doc.get("tour"):
+            notes_doc["tour"] = [t for t in doc["tour"]
+                                 if isinstance(t, dict) and t.get("file")]
+    return merged_notes
+
+
 # ---------------------------------------------------------------------------
 # comments.user.md parsing (previous rounds)
 # ---------------------------------------------------------------------------
@@ -315,6 +498,23 @@ def render_notes_md(notes_doc):
     out.append("- head: %s" % notes_doc.get("head", "?"))
     out.append("- generated: %s" % notes_doc.get("generated_at", "?"))
     out.append("")
+    overview = notes_doc.get("overview") or {}
+    if overview.get("body") or overview.get("diagrams"):
+        out.append("## %s" % (overview.get("title") or "Overview"))
+        out.append("")
+        if overview.get("body"):
+            out.append(overview["body"].strip())
+            out.append("")
+        for d in overview.get("diagrams", []):
+            if not d.get("mermaid", "").strip():
+                continue
+            if d.get("title"):
+                out.append("### %s" % d["title"])
+                out.append("")
+            out.append("```mermaid")
+            out.append(d["mermaid"].strip())
+            out.append("```")
+            out.append("")
     groups = {}
     order = []
     for n in notes_doc.get("notes", []):
@@ -378,6 +578,8 @@ def render_note_card(note, unanchored=False):
     if sev not in SEVERITIES:
         sev = "info"
     badge_extra = '<span class="badge unanch">unanchored</span>' if unanchored else ""
+    if note.get("_source"):
+        badge_extra += '<span class="badge src-b" title="contributed by an external tool">%s</span>' % esc(note["_source"])
     return (
         '<details class="ai-note sev-%s" open data-note="%s">'
         '<summary><span class="badge sev-b">%s</span>%s'
@@ -389,6 +591,131 @@ def render_note_card(note, unanchored=False):
     )
 
 
+def render_overview(overview, mermaid_available, checklist_html=""):
+    """Render the optional notes.ai.json "overview" object: an intro body
+    (markdown) plus mermaid diagrams, plus the plan<->implementation
+    checklist when present. Diagrams fall back to plain source blocks when
+    the vendored mermaid asset is missing."""
+    parts = ['<section id="overview">']
+    parts.append('<h2>%s</h2>' % esc(overview.get("title") or "Overview"))
+    body = overview.get("body", "")
+    if body:
+        parts.append('<div class="ov-body">%s</div>' % md_render(body))
+    for d in overview.get("diagrams", []):
+        src = d.get("mermaid", "").strip()
+        if not src:
+            continue
+        parts.append('<figure class="diagram">')
+        if d.get("title"):
+            parts.append('<figcaption>%s</figcaption>' % esc(d["title"]))
+        if mermaid_available:
+            parts.append('<pre class="mermaid">%s</pre>' % html.escape(src, quote=False))
+        else:
+            parts.append('<pre><code>%s</code></pre>' % html.escape(src, quote=False))
+        parts.append('</figure>')
+    parts.append(checklist_html)
+    parts.append('</section>')
+    return "".join(parts)
+
+
+CHECK_STATUS = {
+    "done": ("&#10003;", "chk-done"),
+    "partial": ("&#8776;", "chk-partial"),
+    "missing": ("&#10007;", "chk-missing"),
+}
+
+
+def render_checklist(checklist):
+    """checklist items: {"item", "status", "_target" (resolved element id or None)}"""
+    parts = ['<div class="checklist"><h3>Plan &harr; implementation</h3><ul>']
+    for c in checklist:
+        mark, cls = CHECK_STATUS.get(c.get("status"), CHECK_STATUS["partial"])
+        link = ('<a class="chk-link" href="#%s">view</a>' % esc(c["_target"])
+                if c.get("_target") else "")
+        src = ('<span class="chk-src">%s</span>' % esc(c["_source"])
+               if c.get("_source") else "")
+        parts.append('<li class="%s"><span class="chk-i">%s</span> %s %s%s</li>'
+                     % (cls, mark, _md_inline(c.get("item", "")), link, src))
+    parts.append('</ul></div>')
+    return "".join(parts)
+
+
+def render_tour_nav(tour):
+    """tour steps: {"title", "body", "_target" (resolved element id or None)}"""
+    parts = ['<nav id="tour">']
+    parts.append('<div class="tour-head"><b>Guided tour</b>'
+                 '<span class="tour-pos" id="tour-pos"></span>'
+                 '<button id="tour-toggle" title="Collapse tour">&raquo;</button></div>')
+    parts.append('<ol id="tour-steps">')
+    for i, t in enumerate(tour):
+        body = ('<span class="tour-note">%s</span>' % _md_inline(t["body"])
+                if t.get("body") else "")
+        target = ' data-target="%s"' % esc(t["_target"]) if t.get("_target") else ""
+        parts.append('<li><a href="#" data-step="%d"%s><b>%s</b>%s</a></li>'
+                     % (i, target, esc(t.get("title", "step %d" % (i + 1))), body))
+    parts.append('</ol>')
+    parts.append('<div class="tour-btns"><button id="tour-prev">&uarr; prev</button>'
+                 '<button id="tour-next" class="primary">next &darr;</button></div>')
+    parts.append('</nav>')
+    parts.append('<button id="tour-tab" hidden title="Open guided tour">Tour</button>')
+    return "".join(parts)
+
+
+def render_filter_bar(att_counts, has_notes):
+    parts = ['<div id="filters">']
+    parts.append('<span class="f-label">files</span>')
+    total = sum(att_counts.values())
+    parts.append('<button class="fbtn active" data-f="all">all (%d)</button>' % total)
+    for att in ATTENTIONS:
+        if att_counts.get(att):
+            parts.append('<button class="fbtn" data-f="%s">%s (%d)</button>'
+                         % (att, att, att_counts[att]))
+    if has_notes:
+        parts.append('<span class="f-label">notes</span>')
+        for sev in SEVERITIES:
+            parts.append('<button class="nbtn active" data-sev="%s">%s</button>' % (sev, sev))
+    if att_counts.get("mechanical"):
+        parts.append('<button id="btn-mech-viewed" title="Mark all mechanical files as viewed">'
+                     'mechanical &rarr; viewed</button>')
+    parts.append('</div>')
+    return "".join(parts)
+
+
+MERMAID_INIT = r"""
+(function(){
+'use strict';
+if(typeof mermaid === 'undefined') return;
+var blocks = Array.prototype.slice.call(document.querySelectorAll('pre.mermaid'));
+if(!blocks.length) return;
+blocks.forEach(function(el){ el.setAttribute('data-mmd-src', el.textContent); });
+var LIGHT_THEMES = ['light', 'solarized', 'gruvbox-light', 'latte', 'ayu-light'];
+function mermaidTheme(){
+  var t = document.documentElement.getAttribute('data-theme') || 'light';
+  return LIGHT_THEMES.indexOf(t) >= 0 ? 'default' : 'dark';
+}
+var rendering = false, pending = false;
+function render(){
+  if(rendering){ pending = true; return; }
+  rendering = true;
+  mermaid.initialize({startOnLoad:false, securityLevel:'strict', theme: mermaidTheme()});
+  blocks.forEach(function(el){
+    el.removeAttribute('data-processed');
+    el.textContent = el.getAttribute('data-mmd-src');
+  });
+  mermaid.run({nodes: blocks, suppressErrors: true})
+    .catch(function(){})
+    .then(function(){
+      rendering = false;
+      if(pending){ pending = false; render(); }
+    });
+}
+new MutationObserver(function(){ render(); })
+  .observe(document.documentElement, {attributes:true, attributeFilter:['data-theme']});
+render();
+})();
+"""
+
+
 STATUS_BADGE = {
     "added": ("new file", "st-add"),
     "deleted": ("deleted", "st-del"),
@@ -396,23 +723,43 @@ STATUS_BADGE = {
     "modified": ("modified", "st-mod"),
 }
 
+ATTENTIONS = ("risky", "core", "skim", "mechanical")
+ATTENTION_ORDER = {"risky": 0, "core": 1, None: 2, "skim": 3, "mechanical": 4}
 
-def render_file_section(fd, fidx, anchored, unanchored_notes):
-    """anchored: {(hunk_idx0, line_idx): [notes]}"""
+
+def render_file_section(fd, fidx, anchored, unanchored_notes, triage=None, row_ids=None):
+    """anchored: {(hunk_idx0, line_idx): [notes]};
+    triage: optional {"attention":..., "reason":..., "untested":...};
+    row_ids: optional {(hunk_idx0, line_idx): element_id} for tour/checklist."""
     p = fd.path
     label, cls = STATUS_BADGE[fd.status]
     title = esc(p)
     if fd.status == "renamed" and fd.old_path != fd.new_path:
         title = "%s &rarr; %s" % (esc(fd.old_path or "?"), esc(fd.new_path or "?"))
     lang = detect_lang(p)
+    triage = triage or {}
+    row_ids = row_ids or {}
+    attention = triage.get("attention")
+    if attention not in ATTENTIONS:
+        attention = None
+    open_attr = "" if attention == "mechanical" else " open"
+
+    att_badges = ""
+    if attention:
+        att_badges += '<span class="badge att-%s"%s>%s</span>' % (
+            attention,
+            ' title="%s"' % esc(triage["reason"]) if triage.get("reason") else "",
+            attention)
+    if triage.get("untested"):
+        att_badges += '<span class="badge att-untested" title="changed logic not covered by tests in this diff">untested</span>'
 
     parts = []
-    parts.append('<details class="file" open data-file="%s" data-lang="%s" id="file-%d">'
-                 % (esc(p), lang, fidx))
+    parts.append('<details class="file"%s data-file="%s" data-lang="%s" data-attention="%s" id="file-%d">'
+                 % (open_attr, esc(p), lang, attention or "core", fidx))
     parts.append('<summary><span class="fpath">%s</span>'
-                 '<span class="badge %s">%s</span>'
+                 '<span class="badge %s">%s</span>%s'
                  '<label class="viewed-l"><input type="checkbox" class="viewed-cb" data-file="%s"> Viewed</label>'
-                 '</summary>' % (title, cls, label, esc(p)))
+                 '</summary>' % (title, cls, label, att_badges, esc(p)))
     parts.append('<div class="unanchored" data-file="%s">' % esc(p))
     for n in unanchored_notes:
         parts.append(render_note_card(n, unanchored=True))
@@ -426,6 +773,7 @@ def render_file_section(fd, fidx, anchored, unanchored_notes):
         parts.append('<table class="diff"><colgroup><col class="c-no"><col class="c-no">'
                      '<col class="c-gl"><col class="c-code"></colgroup>')
         for hi, hunk in enumerate(fd.hunks):
+            chg = intraline_ranges(hunk)
             parts.append('<tbody class="hunk" data-file="%s" data-h="%d">' % (esc(p), hi + 1))
             parts.append('<tr class="hunkhdr"><td class="no"></td><td class="no"></td>'
                          '<td class="gl">&hellip;</td><td class="code">%s</td></tr>'
@@ -437,10 +785,14 @@ def render_file_section(fd, fidx, anchored, unanchored_notes):
                     continue
                 glyph = {"add": "+", "del": "-", "ctx": "&nbsp;"}[ln.kind]
                 side = "old" if ln.kind == "del" else "new"
+                rid = row_ids.get((hi, li))
+                extra = ' id="%s"' % rid if rid else ""
+                if li in chg:
+                    extra += ' data-cs="%d" data-ce="%d"' % chg[li]
                 parts.append(
-                    '<tr class="ln %s" data-side="%s"><td class="no">%s</td><td class="no">%s</td>'
+                    '<tr class="ln %s" data-side="%s"%s><td class="no">%s</td><td class="no">%s</td>'
                     '<td class="gl">%s</td><td class="code">%s</td></tr>'
-                    % (ln.kind, side,
+                    % (ln.kind, side, extra,
                        ln.old_no if ln.old_no is not None else "",
                        ln.new_no if ln.new_no is not None else "",
                        glyph, esc(ln.text)))
@@ -455,6 +807,10 @@ def render_file_section(fd, fidx, anchored, unanchored_notes):
 
 def build_html(files, notes_doc, prev_comments, title, review_id, template):
     notes = list(notes_doc.get("notes", []))
+    triage_map = {t.get("file"): t for t in notes_doc.get("triage", [])
+                  if isinstance(t, dict)}
+    files = sorted(files, key=lambda fd: ATTENTION_ORDER.get(
+        (triage_map.get(fd.path) or {}).get("attention"), 2))
     by_file = {}
     for fd in files:
         by_file.setdefault(fd.path, fd)
@@ -472,7 +828,7 @@ def build_html(files, notes_doc, prev_comments, title, review_id, template):
             orphan_notes.append(note)
             n_unanchored += 1
             continue
-        pos = resolve_anchor(fd, note.get("hunk_index"), note.get("anchor_line_content", ""))
+        pos = resolve_entry(fd, note)
         if pos is None:
             unanchored[id(fd)].append(note)
             n_unanchored += 1
@@ -480,7 +836,45 @@ def build_html(files, notes_doc, prev_comments, title, review_id, template):
             anchored[id(fd)].setdefault(pos, []).append(note)
             n_anchored += 1
 
+    overview = notes_doc.get("overview") or {}
+    diagrams = [d for d in overview.get("diagrams", []) if d.get("mermaid", "").strip()]
+    mermaid_js = None
+    if diagrams:
+        if MERMAID_ASSET.is_file():
+            mermaid_js = MERMAID_ASSET.read_text(encoding="utf-8")
+        else:
+            print("warning: %s missing — diagrams rendered as plain source blocks"
+                  % MERMAID_ASSET, file=sys.stderr)
+
+    # Resolve tour steps and checklist items to row element ids
+    file_pos = {id(fd): i for i, fd in enumerate(files)}
+    row_ids = {id(fd): {} for fd in files}
+
+    def resolve_target(entry, prefix, idx):
+        fd = by_file.get(entry.get("file", ""))
+        if fd is None:
+            return None
+        pos = resolve_entry(fd, entry)
+        if pos is None:
+            return "file-%d" % file_pos[id(fd)]
+        existing = row_ids[id(fd)].get(pos)
+        if existing:
+            return existing
+        rid = "%s-%d" % (prefix, idx)
+        row_ids[id(fd)][pos] = rid
+        return rid
+
+    tour = [t for t in notes_doc.get("tour", []) if isinstance(t, dict)]
+    for i, t in enumerate(tour):
+        t["_target"] = resolve_target(t, "tour", i)
+    checklist = [c for c in notes_doc.get("checklist", []) if isinstance(c, dict)]
+    for i, c in enumerate(checklist):
+        c["_target"] = resolve_target(c, "chk", i) if c.get("file") else None
+
     body = []
+    if overview.get("body") or diagrams or checklist:
+        body.append(render_overview(overview, mermaid_js is not None,
+                                    render_checklist(checklist) if checklist else ""))
     if orphan_notes:
         body.append('<section class="orphans"><h2>Notes on files not in this diff</h2>')
         for n in orphan_notes:
@@ -489,8 +883,20 @@ def build_html(files, notes_doc, prev_comments, title, review_id, template):
         body.append('</section>')
     if not files:
         body.append('<p class="empty">No changes in this diff.</p>')
+    else:
+        att_counts = {}
+        for fd in files:
+            att = (triage_map.get(fd.path) or {}).get("attention")
+            if att not in ATTENTIONS:
+                att = "core"
+            att_counts[att] = att_counts.get(att, 0) + 1
+        if len(files) > 1 or notes:
+            body.append(render_filter_bar(att_counts, bool(notes)))
     for fidx, fd in enumerate(files):
-        body.append(render_file_section(fd, fidx, anchored[id(fd)], unanchored[id(fd)]))
+        body.append(render_file_section(fd, fidx, anchored[id(fd)], unanchored[id(fd)],
+                                        triage_map.get(fd.path), row_ids[id(fd)]))
+    if tour:
+        body.append(render_tour_nav(tour))
 
     prev = []
     for i, c in enumerate(c for c in prev_comments if not c["resolved"]):
@@ -517,6 +923,13 @@ def build_html(files, notes_doc, prev_comments, title, review_id, template):
     if notes_doc.get("base") or notes_doc.get("head"):
         refs = "%s .. %s" % (notes_doc.get("base", "?"), notes_doc.get("head", "?"))
 
+    mermaid_html = ""
+    if mermaid_js is not None:
+        # '</script' can't appear un-escaped inside an inline script element
+        mermaid_html = ("<script>%s</script>\n<script>%s</script>"
+                        % (mermaid_js.replace("</script", "<\\/script"),
+                           MERMAID_INIT))
+
     out = (template
            .replace("@@TITLE@@", esc(title))
            .replace("@@REFS@@", esc(refs))
@@ -524,11 +937,17 @@ def build_html(files, notes_doc, prev_comments, title, review_id, template):
            .replace("@@FILE_COUNT@@", str(len(files)))
            .replace("@@NOTES_COUNT@@", str(len(notes)))
            .replace("@@BODY@@", "".join(body))
-           .replace("@@DATA@@", data_json))
+           .replace("@@DATA@@", data_json)
+           .replace("@@MERMAID@@", mermaid_html))
     stats = {"files": len(files),
              "hunks": sum(len(f.hunks) for f in files),
              "notes_anchored": n_anchored,
              "notes_unanchored": n_unanchored,
+             "overview": bool(overview.get("body") or diagrams),
+             "diagrams": len(diagrams),
+             "triage_files": len([f for f in files if triage_map.get(f.path)]),
+             "tour_steps": len(tour),
+             "checklist_items": len(checklist),
              "prev_comments": len(prev)}
     return out, stats
 
@@ -555,7 +974,7 @@ def ensure_gitignore(repo_root):
 
 # ---------------------------------------------------------------------------
 # Embedded HTML template (placeholders: @@TITLE@@ @@REFS@@ @@GENERATED@@
-# @@FILE_COUNT@@ @@NOTES_COUNT@@ @@BODY@@ @@DATA@@)
+# @@FILE_COUNT@@ @@NOTES_COUNT@@ @@BODY@@ @@DATA@@ @@MERMAID@@)
 # ---------------------------------------------------------------------------
 
 TEMPLATE = r"""<!DOCTYPE html>
@@ -595,6 +1014,90 @@ body{margin:0;font:14px/1.5 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans
   --added-bg:#003a00;--removed-bg:#4a0000;--note-bg:#0d0d0d;
   --warn:#ffd700;--sugg:#00e5e5;--info:#7fbfff;--res:#00e000;
   --kw:#ff8f8f;--str:#8fff8f;--com:#c8c8c8;--num:#8fc8ff;
+}
+:root[data-theme="dracula"]{
+  --bg:#282a36;--fg:#f8f8f2;--muted:#6272a4;--panel:#21222c;--border:#44475a;
+  --accent:#bd93f9;--accent-fg:#282a36;
+  --added-bg:#1f3b2c;--removed-bg:#43242b;--note-bg:#21222c;
+  --warn:#ffb86c;--sugg:#ff79c6;--info:#8be9fd;--res:#50fa7b;
+  --kw:#ff79c6;--str:#f1fa8c;--com:#6272a4;--num:#bd93f9;
+}
+:root[data-theme="nord"]{
+  --bg:#2e3440;--fg:#d8dee9;--muted:#616e88;--panel:#3b4252;--border:#4c566a;
+  --accent:#88c0d0;--accent-fg:#2e3440;
+  --added-bg:#37423b;--removed-bg:#4a3439;--note-bg:#3b4252;
+  --warn:#ebcb8b;--sugg:#b48ead;--info:#81a1c1;--res:#a3be8c;
+  --kw:#81a1c1;--str:#a3be8c;--com:#616e88;--num:#b48ead;
+}
+:root[data-theme="gruvbox-dark"]{
+  --bg:#282828;--fg:#ebdbb2;--muted:#928374;--panel:#32302f;--border:#504945;
+  --accent:#83a598;--accent-fg:#282828;
+  --added-bg:#34381b;--removed-bg:#442e2d;--note-bg:#32302f;
+  --warn:#fabd2f;--sugg:#d3869b;--info:#83a598;--res:#b8bb26;
+  --kw:#fb4934;--str:#b8bb26;--com:#928374;--num:#d3869b;
+}
+:root[data-theme="gruvbox-light"]{
+  --bg:#fbf1c7;--fg:#3c3836;--muted:#7c6f64;--panel:#f2e5bc;--border:#d5c4a1;
+  --accent:#076678;--accent-fg:#fbf1c7;
+  --added-bg:#e0e4b8;--removed-bg:#f6d1c8;--note-bg:#f2e5bc;
+  --warn:#b57614;--sugg:#8f3f71;--info:#076678;--res:#79740e;
+  --kw:#9d0006;--str:#79740e;--com:#7c6f64;--num:#8f3f71;
+}
+:root[data-theme="monokai"]{
+  --bg:#272822;--fg:#f8f8f2;--muted:#75715e;--panel:#1e1f1c;--border:#49483e;
+  --accent:#66d9ef;--accent-fg:#272822;
+  --added-bg:#2d3a25;--removed-bg:#4a2b32;--note-bg:#1e1f1c;
+  --warn:#e6db74;--sugg:#ae81ff;--info:#66d9ef;--res:#a6e22e;
+  --kw:#f92672;--str:#e6db74;--com:#75715e;--num:#ae81ff;
+}
+:root[data-theme="onedark"]{
+  --bg:#282c34;--fg:#abb2bf;--muted:#5c6370;--panel:#21252b;--border:#3e4451;
+  --accent:#61afef;--accent-fg:#282c34;
+  --added-bg:#2c3b2f;--removed-bg:#43292d;--note-bg:#21252b;
+  --warn:#e5c07b;--sugg:#c678dd;--info:#61afef;--res:#98c379;
+  --kw:#c678dd;--str:#98c379;--com:#5c6370;--num:#d19a66;
+}
+:root[data-theme="mocha"]{
+  --bg:#1e1e2e;--fg:#cdd6f4;--muted:#6c7086;--panel:#181825;--border:#45475a;
+  --accent:#89b4fa;--accent-fg:#1e1e2e;
+  --added-bg:#29392f;--removed-bg:#46282f;--note-bg:#181825;
+  --warn:#f9e2af;--sugg:#cba6f7;--info:#89b4fa;--res:#a6e3a1;
+  --kw:#cba6f7;--str:#a6e3a1;--com:#6c7086;--num:#fab387;
+}
+:root[data-theme="latte"]{
+  --bg:#eff1f5;--fg:#4c4f69;--muted:#8c8fa1;--panel:#e6e9ef;--border:#ccd0da;
+  --accent:#1e66f5;--accent-fg:#eff1f5;
+  --added-bg:#e0edd7;--removed-bg:#f5dde1;--note-bg:#e6e9ef;
+  --warn:#df8e1d;--sugg:#8839ef;--info:#1e66f5;--res:#40a02b;
+  --kw:#8839ef;--str:#40a02b;--com:#8c8fa1;--num:#fe640b;
+}
+:root[data-theme="tokyonight"]{
+  --bg:#1a1b26;--fg:#c0caf5;--muted:#565f89;--panel:#16161e;--border:#292e42;
+  --accent:#7aa2f7;--accent-fg:#1a1b26;
+  --added-bg:#1f3a28;--removed-bg:#3f2831;--note-bg:#16161e;
+  --warn:#e0af68;--sugg:#bb9af7;--info:#7aa2f7;--res:#9ece6a;
+  --kw:#bb9af7;--str:#9ece6a;--com:#565f89;--num:#ff9e64;
+}
+:root[data-theme="rosepine"]{
+  --bg:#191724;--fg:#e0def4;--muted:#6e6a86;--panel:#1f1d2e;--border:#26233a;
+  --accent:#c4a7e7;--accent-fg:#191724;
+  --added-bg:#1e3a2f;--removed-bg:#41262e;--note-bg:#1f1d2e;
+  --warn:#f6c177;--sugg:#c4a7e7;--info:#9ccfd8;--res:#9ccfd8;
+  --kw:#eb6f92;--str:#f6c177;--com:#6e6a86;--num:#c4a7e7;
+}
+:root[data-theme="everforest"]{
+  --bg:#2d353b;--fg:#d3c6aa;--muted:#859289;--panel:#232a2e;--border:#475258;
+  --accent:#7fbbb3;--accent-fg:#2d353b;
+  --added-bg:#3b4a3a;--removed-bg:#4c3743;--note-bg:#232a2e;
+  --warn:#dbbc7f;--sugg:#d699b6;--info:#7fbbb3;--res:#a7c080;
+  --kw:#e67e80;--str:#a7c080;--com:#859289;--num:#d699b6;
+}
+:root[data-theme="ayu-light"]{
+  --bg:#fafafa;--fg:#5c6773;--muted:#959da6;--panel:#f0f0f0;--border:#d9d8d7;
+  --accent:#399ee6;--accent-fg:#fafafa;
+  --added-bg:#e0f0d5;--removed-bg:#fbe2e2;--note-bg:#f0f0f0;
+  --warn:#f2ae49;--sugg:#a37acc;--info:#399ee6;--res:#86b300;
+  --kw:#fa8d3e;--str:#86b300;--com:#abb0b6;--num:#a37acc;
 }
 #topbar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
   padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--border)}
@@ -650,6 +1153,72 @@ tr.ln.cur td.code{box-shadow:inset 0 0 0 2px var(--accent)}
 .tok-num{color:var(--num)}
 .unanchored{padding:0 12px}
 .unanchored .ai-note,.unanchored .ucomment{margin:8px 0}
+#overview{border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:16px;background:var(--panel)}
+#overview h2{margin:0 0 8px;font-size:15px}
+#overview .ov-body{font-size:13.5px}
+#overview .ov-body p{margin:6px 0}
+#overview .ov-body code{background:var(--bg);border:1px solid var(--border);border-radius:4px;
+  padding:0 4px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+#overview .ov-body pre{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;overflow-x:auto}
+#overview .ov-body pre code{border:none;background:none;padding:0}
+figure.diagram{margin:12px 0 4px;border:1px solid var(--border);border-radius:8px;background:var(--bg);
+  padding:10px;overflow-x:auto}
+figure.diagram figcaption{font-size:12px;color:var(--muted);margin-bottom:6px}
+figure.diagram pre{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+figure.diagram pre.mermaid[data-processed]{text-align:center}
+figure.diagram svg{max-width:100%}
+.badge.att-risky{background:var(--removed-bg);color:var(--kw)}
+.badge.att-core{background:var(--note-bg);color:var(--info);border:1px solid var(--border)}
+.badge.att-skim{background:var(--note-bg);color:var(--muted);border:1px solid var(--border)}
+.badge.att-mechanical{background:var(--note-bg);color:var(--muted);border:1px dashed var(--border);font-weight:400}
+.badge.att-untested{background:var(--note-bg);color:var(--warn);border:1px solid var(--warn)}
+#filters{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 10px;margin-bottom:16px;
+  border:1px solid var(--border);border-radius:8px;background:var(--panel);font-size:12px}
+#filters .f-label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px;margin:0 2px 0 6px}
+#filters .f-label:first-child{margin-left:0}
+#filters button.active{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+#filters button.nbtn:not(.active){opacity:.5;text-decoration:line-through}
+.f-hidden{display:none!important}
+.dchg{background:rgba(250,200,40,.32);border-radius:2px;box-shadow:0 0 0 1px rgba(250,200,40,.18)}
+.checklist{margin-top:12px;border-top:1px solid var(--border);padding-top:8px}
+.checklist h3{margin:0 0 6px;font-size:13px}
+.checklist ul{margin:0;padding:0;list-style:none;font-size:13px}
+.checklist li{padding:2px 0}
+.checklist .chk-i{display:inline-block;width:18px;font-weight:700;text-align:center}
+.checklist .chk-done .chk-i{color:var(--res)}
+.checklist .chk-partial .chk-i{color:var(--warn)}
+.checklist .chk-missing .chk-i{color:var(--kw)}
+.checklist li.chk-missing{color:var(--kw)}
+.checklist .chk-link{font-size:11px;margin-left:6px}
+#tour{position:fixed;right:12px;top:96px;z-index:60;width:260px;max-height:calc(100vh - 140px);
+  display:flex;flex-direction:column;border:1px solid var(--border);border-radius:10px;
+  background:var(--panel);box-shadow:0 4px 16px rgba(0,0,0,.18);font-size:13px}
+#tour .tour-head{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border)}
+#tour .tour-pos{color:var(--muted);font-size:11px;margin-left:auto}
+#tour ol{margin:0;padding:4px 0;list-style:none;overflow-y:auto;flex:1}
+#tour ol a{display:block;padding:6px 12px;color:var(--fg);text-decoration:none;border-left:3px solid transparent}
+#tour ol a b{display:block;font-size:12.5px}
+#tour ol a .tour-note{color:var(--muted);font-size:11.5px}
+#tour ol a:hover{background:var(--bg)}
+#tour ol li.cur a{border-left-color:var(--accent);background:var(--bg)}
+#tour .tour-btns{display:flex;gap:6px;padding:8px 12px;border-top:1px solid var(--border)}
+#tour .tour-btns button{flex:1}
+#tour-tab{position:fixed;right:0;top:120px;z-index:60;writing-mode:vertical-rl;padding:10px 4px;
+  border-radius:6px 0 0 6px;border-right:none;background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+@media (max-width:1200px){#tour{width:220px}}
+tr.ln.flash td.code{animation:rd-flash 1.2s ease-out}
+@keyframes rd-flash{0%,60%{box-shadow:inset 0 0 0 2px var(--accent)}100%{box-shadow:none}}
+.cfx{position:fixed;left:0;top:0;width:8px;height:8px;z-index:300;pointer-events:none;border-radius:2px}
+#xp-chip{font-size:12px;font-weight:600;color:var(--accent);white-space:nowrap}
+#xp-chip .xp-bar{display:inline-block;width:52px;height:6px;border-radius:3px;background:var(--border);
+  vertical-align:middle;margin-left:5px;overflow:hidden}
+#xp-chip .xp-fill{display:block;height:100%;background:var(--accent)}
+#xp-chip.pulse{animation:rd-pulse .8s ease-out}
+@keyframes rd-pulse{30%{transform:scale(1.35)}}
+#xp-toast{position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);z-index:310;pointer-events:none;
+  font-size:42px;font-weight:800;color:var(--accent);text-shadow:0 2px 12px rgba(0,0,0,.35);opacity:0}
+#xp-toast.show{animation:rd-toast 1.6s ease-out}
+@keyframes rd-toast{10%{opacity:1;transform:translate(-50%,-50%) scale(1.15)}70%{opacity:1}100%{opacity:0;transform:translate(-50%,-80%) scale(1)}}
 .orphans{border:1px dashed var(--border);border-radius:8px;padding:12px;margin-bottom:16px}
 .orphans h2{margin:0 0 8px;font-size:14px}
 .orphan-file{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--muted);margin-top:8px}
@@ -665,6 +1234,14 @@ tr.ln.cur td.code{box-shadow:inset 0 0 0 2px var(--accent)}
 .ai-note.sev-warning .sev-b{background:var(--warn)}
 .ai-note.sev-suggestion .sev-b{background:var(--sugg)}
 .badge.unanch{background:var(--removed-bg);color:var(--kw)}
+.badge.dis-b{background:var(--panel);color:var(--muted);border:1px solid var(--border)}
+.badge.src-b{background:var(--panel);color:var(--muted);border:1px solid var(--border);font-weight:400;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10.5px}
+.chk-src{color:var(--muted);font-size:11px;margin-left:6px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.ai-note .dismiss-btn{font-size:11px;padding:1px 8px}
+.ai-note.dismissed{opacity:.55}
+.ai-note.dismissed .nt{text-decoration:line-through}
 .ai-note .nb{padding:2px 12px 8px;font-size:13px}
 .ai-note .nb p{margin:6px 0}
 .ai-note .nb code,.uc-body code{background:var(--panel);border:1px solid var(--border);border-radius:4px;
@@ -715,8 +1292,22 @@ kbd{background:var(--bg);border:1px solid var(--border);border-bottom-width:2px;
       <option value="dark">Dark</option>
       <option value="solarized">Solarized</option>
       <option value="contrast">High contrast</option>
+      <option value="dracula">Dracula</option>
+      <option value="nord">Nord</option>
+      <option value="gruvbox-dark">Gruvbox Dark</option>
+      <option value="gruvbox-light">Gruvbox Light</option>
+      <option value="monokai">Monokai</option>
+      <option value="onedark">One Dark</option>
+      <option value="mocha">Catppuccin Mocha</option>
+      <option value="latte">Catppuccin Latte</option>
+      <option value="tokyonight">Tokyo Night</option>
+      <option value="rosepine">Ros&eacute; Pine</option>
+      <option value="everforest">Everforest</option>
+      <option value="ayu-light">Ayu Light</option>
       <option value="custom">Custom&hellip;</option>
     </select>
+    <span id="xp-chip" hidden></span>
+    <button id="btn-arcade" title="Arcade mode: XP + confetti while you review">&#127918;</button>
     <button id="btn-connect" title="Write comments.user.md live into the review folder (Chromium only)">Connect review folder</button>
     <span id="fsa-status"></span>
     <button id="btn-export" class="primary" title="Download comments.user.md">Export comments</button>
@@ -870,6 +1461,29 @@ $$('details.file').forEach(function(f){
   });
 });
 
+/* ---------------- intraline (word-level) diff highlight ---------------- */
+$$('tr.ln[data-cs]').forEach(function(row){
+  var td = $('td.code', row);
+  if(!td) return;
+  var start = +row.getAttribute('data-cs'), end = +row.getAttribute('data-ce');
+  var walker = document.createTreeWalker(td, NodeFilter.SHOW_TEXT);
+  var node, pos = 0, targets = [];
+  while((node = walker.nextNode())){
+    var len = node.textContent.length;
+    var s = Math.max(start - pos, 0), e = Math.min(end - pos, len);
+    if(s < e) targets.push([node, s, e]);
+    pos += len;
+    if(pos >= end) break;
+  }
+  targets.forEach(function(t){
+    var r = document.createRange();
+    r.setStart(t[0], t[1]); r.setEnd(t[0], t[2]);
+    var span = document.createElement('span');
+    span.className = 'dchg';
+    try{ r.surroundContents(span); }catch(err){}
+  });
+});
+
 /* ---------------- viewed tracking ---------------- */
 var viewed = lsGet(K + 'viewed', []);
 function refreshViewed(){
@@ -884,9 +1498,15 @@ function refreshViewed(){
 }
 function toggleViewed(path){
   var i = viewed.indexOf(path);
-  if(i >= 0) viewed.splice(i, 1); else viewed.push(path);
+  var marking = i < 0;
+  if(marking) viewed.push(path); else viewed.splice(i, 1);
   lsSet(K + 'viewed', viewed);
   refreshViewed();
+  if(marking){
+    var det = $$('details.file').filter(function(f){ return f.getAttribute('data-file') === path; })[0];
+    if(det){ det.open = false; awardXp(10, $('summary', det)); }
+    if(data.files.length && viewed.length >= data.files.length) awardXp(50, null, 'ALL FILES VIEWED!');
+  }
 }
 $$('.viewed-cb').forEach(function(cb){
   cb.addEventListener('click', function(e){ e.stopPropagation(); });
@@ -894,6 +1514,47 @@ $$('.viewed-cb').forEach(function(cb){
 });
 $$('.viewed-l').forEach(function(l){ l.addEventListener('click', function(e){ e.stopPropagation(); }); });
 refreshViewed();
+
+/* ---------------- AI note dismissal ---------------- */
+var dismissed = lsGet(K + 'dismissedNotes', []);
+function noteFile(el){
+  var f = el.closest('details.file');
+  return f ? f.getAttribute('data-file') : 'not-in-diff';
+}
+function refreshDismissed(){
+  $$('.ai-note').forEach(function(el){
+    var on = dismissed.indexOf(el.getAttribute('data-note')) >= 0;
+    el.classList.toggle('dismissed', on);
+    var b = $('.dismiss-btn', el);
+    if(b) b.textContent = on ? 'Restore' : 'Dismiss';
+    var badge = $('.dis-b', el);
+    if(badge) badge.hidden = !on;
+  });
+}
+$$('.ai-note').forEach(function(el){
+  var s = $('summary', el);
+  if(!s || !el.getAttribute('data-note')) return;
+  var badge = document.createElement('span');
+  badge.className = 'badge dis-b';
+  badge.textContent = 'dismissed';
+  badge.hidden = true;
+  var btn = document.createElement('button');
+  btn.className = 'dismiss-btn';
+  btn.type = 'button';
+  btn.title = 'Mark this note so the AI will not address or re-raise it';
+  btn.addEventListener('click', function(e){
+    e.preventDefault(); e.stopPropagation();
+    var id = el.getAttribute('data-note');
+    var i = dismissed.indexOf(id);
+    if(i >= 0) dismissed.splice(i, 1); else { dismissed.push(id); awardXp(3, btn); }
+    lsSet(K + 'dismissedNotes', dismissed);
+    refreshDismissed();
+    scheduleDisk();
+  });
+  s.appendChild(badge);
+  s.appendChild(btn);
+});
+refreshDismissed();
 
 /* ---------------- comment store ---------------- */
 var store = lsGet(K + 'comments', null) || {v:1, items:[]};
@@ -1019,7 +1680,7 @@ document.addEventListener('click', function(e){
   var c = store.items.filter(function(x){ return x.id === cid; })[0];
   if(!c) return;
   var act = btn.getAttribute('data-act');
-  if(act === 'resolve'){ c.resolved = !c.resolved; saveStore(); renderComments(); }
+  if(act === 'resolve'){ c.resolved = !c.resolved; if(c.resolved) awardXp(5, card); saveStore(); renderComments(); }
   else if(act === 'del'){
     store.items = store.items.filter(function(x){ return x.id !== cid; });
     if(cid.indexOf('prev-') === 0) deletedIds.push(cid);
@@ -1067,6 +1728,7 @@ function openComposer(anchorRow, hostCard, editing){
         resolved: false,
         round: 'current'
       });
+      awardXp(5, anchorRow);
     }
     closeComposer();
     saveStore();
@@ -1110,6 +1772,16 @@ document.addEventListener('click', function(e){
 function toMarkdown(){
   var s = '# review-deck comments\n\n- review: ' + data.id +
           '\n- exported: ' + new Date().toISOString() + '\n';
+  if(dismissed.length){
+    s += '\n## dismissed AI notes\n\n';
+    $$('.ai-note').forEach(function(el){
+      var id = el.getAttribute('data-note');
+      if(dismissed.indexOf(id) < 0) return;
+      var t = $('.nt', el);
+      s += '- ' + id + ' · ' + noteFile(el) + ' · ' + (t ? t.textContent : '') + '\n';
+    });
+    s += '\n---\n';
+  }
   store.items.forEach(function(c){
     s += '\n## ' + c.file + ' — hunk ' + c.hunk + '\n\n' +
          '> ' + c.line + '\n\n' +
@@ -1225,10 +1897,164 @@ document.addEventListener('keydown', function(e){
   e.preventDefault();
 });
 
+/* ---------------- attention & severity filters ---------------- */
+$$('#filters .fbtn').forEach(function(b){
+  b.addEventListener('click', function(){
+    $$('#filters .fbtn').forEach(function(x){ x.classList.remove('active'); });
+    b.classList.add('active');
+    var f = b.getAttribute('data-f');
+    $$('details.file').forEach(function(d){
+      d.classList.toggle('f-hidden', f !== 'all' && d.getAttribute('data-attention') !== f);
+    });
+  });
+});
+$$('#filters .nbtn').forEach(function(b){
+  b.addEventListener('click', function(){
+    b.classList.toggle('active');
+    var sev = b.getAttribute('data-sev'), on = b.classList.contains('active');
+    $$('.ai-note.sev-' + sev).forEach(function(n){
+      var row = n.closest('tr.ai-note-row');
+      (row || n).classList.toggle('f-hidden', !on);
+    });
+  });
+});
+var mv = $('#btn-mech-viewed');
+if(mv) mv.addEventListener('click', function(){
+  $$('details.file[data-attention="mechanical"]').forEach(function(d){
+    var path = d.getAttribute('data-file');
+    if(viewed.indexOf(path) < 0) toggleViewed(path);
+  });
+});
+
+/* ---------------- guided tour ---------------- */
+var tourEl = $('#tour');
+if(tourEl){
+  var tourLinks = $$('#tour ol a');
+  var tourCur = lsGet(K + 'tourStep', -1);
+  var tourPos = $('#tour-pos');
+  var tourShow = function(open){
+    tourEl.hidden = !open;
+    $('#tour-tab').hidden = open;
+    lsSet(K + 'tourOpen', open);
+  };
+  var tourMark = function(){
+    tourLinks.forEach(function(a, j){ a.parentNode.classList.toggle('cur', j === tourCur); });
+    tourPos.textContent = tourCur >= 0
+      ? (tourCur + 1) + '/' + tourLinks.length
+      : tourLinks.length + ' steps';
+  };
+  var tourGo = function(i){
+    if(i < 0 || i >= tourLinks.length) return;
+    tourCur = i;
+    lsSet(K + 'tourStep', i);
+    tourMark();
+    var tid = tourLinks[i].getAttribute('data-target');
+    var t = tid && document.getElementById(tid);
+    if(!t) return;
+    var det = t.closest('details.file');
+    if(det){ det.open = true; det.classList.remove('f-hidden'); }
+    t.scrollIntoView({block:'center'});
+    if(t.classList.contains('ln')){
+      t.classList.remove('flash'); void t.offsetWidth; t.classList.add('flash');
+      setCur(t, false);
+    }
+  };
+  tourLinks.forEach(function(a, i){
+    a.addEventListener('click', function(e){ e.preventDefault(); tourGo(i); });
+  });
+  $('#tour-next').addEventListener('click', function(){ tourGo(Math.min(tourCur + 1, tourLinks.length - 1)); });
+  $('#tour-prev').addEventListener('click', function(){ tourGo(Math.max(tourCur - 1, 0)); });
+  $('#tour-toggle').addEventListener('click', function(){ tourShow(false); });
+  $('#tour-tab').addEventListener('click', function(){ tourShow(true); });
+  tourShow(lsGet(K + 'tourOpen', true));
+  tourMark();
+}
+
+/* ---------------- resume scroll position ---------------- */
+var scT = null;
+window.addEventListener('scroll', function(){
+  clearTimeout(scT);
+  scT = setTimeout(function(){ lsSet(K + 'scroll', window.scrollY); }, 250);
+}, {passive:true});
+var savedY = lsGet(K + 'scroll', 0);
+if(savedY > 0) setTimeout(function(){ window.scrollTo(0, savedY); }, 0);
+
+/* ---------------- arcade mode (XP + confetti) ---------------- */
+var arcade = lsGet('rd:arcade', false);
+var xp = lsGet('rd:xp', 0);
+var arcadeBtn = $('#btn-arcade');
+function xpLevel(v){ return 1 + Math.floor(v / 100); }
+function refreshXp(){
+  var chip = $('#xp-chip');
+  chip.hidden = !arcade;
+  arcadeBtn.classList.toggle('primary', arcade);
+  if(!arcade) return;
+  chip.innerHTML = 'Lv ' + xpLevel(xp) + ' &middot; ' + xp + ' XP' +
+    '<span class="xp-bar"><span class="xp-fill" style="width:' + (xp % 100) + '%"></span></span>';
+}
+function confettiBurst(x, y, n){
+  var parts = [];
+  for(var i = 0; i < n; i++){
+    var d = document.createElement('div');
+    d.className = 'cfx';
+    d.style.background = 'hsl(' + Math.floor(Math.random() * 360) + ',90%,60%)';
+    document.body.appendChild(d);
+    parts.push({el:d, x:x, y:y, vx:(Math.random() - .5) * 10, vy:-(Math.random() * 8 + 4), r:Math.random() * 360});
+  }
+  var t0 = performance.now();
+  function tick(now){
+    var done = now - t0 > 1100;
+    parts.forEach(function(p){
+      p.vy += .4; p.x += p.vx; p.y += p.vy; p.r += p.vx * 5;
+      p.el.style.transform = 'translate(' + p.x + 'px,' + p.y + 'px) rotate(' + p.r + 'deg)';
+      if(done) p.el.style.opacity = '0';
+    });
+    if(!done) requestAnimationFrame(tick);
+    else setTimeout(function(){ parts.forEach(function(p){ p.el.remove(); }); }, 250);
+  }
+  requestAnimationFrame(tick);
+}
+function xpToast(text){
+  var t = $('#xp-toast');
+  if(!t){
+    t = document.createElement('div');
+    t.id = 'xp-toast';
+    document.body.appendChild(t);
+  }
+  t.textContent = text;
+  t.classList.remove('show'); void t.offsetWidth; t.classList.add('show');
+}
+function awardXp(n, el, label){
+  if(!arcade) return;
+  var lvBefore = xpLevel(xp);
+  xp += n;
+  lsSet('rd:xp', xp);
+  refreshXp();
+  var r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+  var x = r ? r.left + r.width / 2 : window.innerWidth / 2;
+  var y = r ? r.top + r.height / 2 : window.innerHeight / 3;
+  confettiBurst(x, y, label ? 90 : 28);
+  var chip = $('#xp-chip');
+  chip.classList.remove('pulse'); void chip.offsetWidth; chip.classList.add('pulse');
+  if(label) xpToast(label);
+  else if(xpLevel(xp) > lvBefore){
+    xpToast('LEVEL ' + xpLevel(xp) + '!');
+    confettiBurst(window.innerWidth / 2, window.innerHeight / 3, 120);
+  }
+}
+arcadeBtn.addEventListener('click', function(){
+  arcade = !arcade;
+  lsSet('rd:arcade', arcade);
+  refreshXp();
+  if(arcade) awardXp(1, arcadeBtn);
+});
+refreshXp();
+
 renderComments();
 saveStore();
 })();
 </script>
+@@MERMAID@@
 </body>
 </html>
 """
@@ -1239,17 +2065,40 @@ saveStore();
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Render a git diff + AI notes into a single-file HTML review page.")
-    ap.add_argument("--patch", required=True, help="path to the raw unified diff")
+    ap.add_argument("--patch", help="path to the raw unified diff")
     ap.add_argument("--notes", help="path to notes.ai.json")
-    ap.add_argument("--out", required=True, help="path for review.html")
+    ap.add_argument("--out", help="path for review.html")
     ap.add_argument("--prev-comments", action="append", default=[],
                     help="comments.user.md from a previous round (repeatable)")
+    ap.add_argument("--contrib", action="append", default=[],
+                    help="external notes fragment to merge (repeatable; see INTEGRATIONS.md)")
+    ap.add_argument("--contrib-dir", metavar="DIR",
+                    help="merge every *.json fragment from DIR (sorted; missing dir is fine)")
+    ap.add_argument("--validate-contrib", action="append", default=[], metavar="FILE",
+                    help="validate fragment file(s) and exit — no patch/out needed")
     ap.add_argument("--notes-md", help="also write notes.ai.md here")
     ap.add_argument("--title", help="page title (default: base..head or patch name)")
     ap.add_argument("--review-id", help="stable id for localStorage keying (default: sha256 of patch)")
     ap.add_argument("--ensure-gitignore", metavar="REPO_ROOT",
                     help="ensure a .code-review/ entry in REPO_ROOT/.gitignore")
     args = ap.parse_args(argv)
+
+    if args.validate_contrib:
+        report = {"ok": True, "files": {}}
+        for p in args.validate_contrib:
+            try:
+                doc = json.loads(Path(p).read_text(encoding="utf-8"))
+                errors, warnings = validate_fragment(doc)
+            except (OSError, json.JSONDecodeError) as e:
+                errors, warnings = [str(e)], []
+            report["files"][p] = {"errors": errors, "warnings": warnings}
+            if errors:
+                report["ok"] = False
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report["ok"] else 1
+
+    if not args.patch or not args.out:
+        ap.error("--patch and --out are required (unless using --validate-contrib)")
 
     patch_text = Path(args.patch).read_text(encoding="utf-8", errors="replace")
     files = parse_patch(patch_text)
@@ -1262,6 +2111,12 @@ def main(argv=None):
         if bad:
             print("warning: unknown severity on notes %s (treated as info)" % ", ".join(bad),
                   file=sys.stderr)
+
+    contrib_paths = list(args.contrib)
+    if args.contrib_dir and Path(args.contrib_dir).is_dir():
+        contrib_paths.extend(sorted(str(p) for p in Path(args.contrib_dir).glob("*.json")))
+    contribs = load_contribs(contrib_paths)
+    contrib_notes = merge_contribs(notes_doc, contribs)
 
     prev_comments = []
     for pc in args.prev_comments:
@@ -1290,6 +2145,8 @@ def main(argv=None):
 
     stats.update({"out": str(out_path), "review_id": review_id,
                   "gitignore": gitignore,
+                  "contrib_files": len(contribs),
+                  "contrib_notes": contrib_notes,
                   "size_kb": round(out_path.stat().st_size / 1024, 1)})
     print(json.dumps(stats, indent=2, sort_keys=True))
     return 0
