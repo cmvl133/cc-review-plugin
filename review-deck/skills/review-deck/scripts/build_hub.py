@@ -126,6 +126,22 @@ a:hover{text-decoration:underline}
 <main>
 @@BODY@@
 </main>
+<script>
+/* WSL: when this page is opened from Windows as file://wsl.localhost/<distro>/...
+   (or legacy file://wsl$/...), plain file:///home/... links would resolve against
+   the Windows filesystem. Rewrite them to the same host+distro prefix the hub
+   itself was opened with. Opened natively in Linux, location.host is empty and
+   links are left untouched. */
+(function(){
+  if(location.protocol !== 'file:' || !location.host) return;
+  var distro = location.pathname.split('/')[1];
+  if(!distro) return;
+  var prefix = 'file://' + location.host + '/' + distro;
+  Array.prototype.forEach.call(document.querySelectorAll('a[href^="file:///"]'), function(a){
+    a.href = prefix + a.href.slice('file://'.length);
+  });
+})();
+</script>
 </body>
 </html>
 """

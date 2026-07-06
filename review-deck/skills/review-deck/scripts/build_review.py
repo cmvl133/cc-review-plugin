@@ -1792,7 +1792,7 @@ function toMarkdown(){
   });
   return s;
 }
-$('#btn-export').addEventListener('click', function(){
+function downloadComments(){
   var blob = new Blob([toMarkdown()], {type:'text/markdown'});
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -1801,6 +1801,14 @@ $('#btn-export').addEventListener('click', function(){
   a.click();
   a.remove();
   setTimeout(function(){ URL.revokeObjectURL(a.href); }, 2000);
+}
+$('#btn-export').addEventListener('click', function(){
+  if(dirHandle){ writeDisk(); return; }
+  if(window.showDirectoryPicker){
+    reconnectDir().then(function(ok){ if(!ok) downloadComments(); });
+    return;
+  }
+  downloadComments();
 });
 $('#btn-copy').addEventListener('click', function(){
   var md = toMarkdown();
@@ -1822,18 +1830,91 @@ function fallbackCopy(text){
 }
 
 /* ---------------- File System Access API ---------------- */
-var dirHandle = null, diskTimer = null;
+var dirHandle = null, diskTimer = null, storedHandle = null;
+function idb(){
+  return new Promise(function(res, rej){
+    var q = indexedDB.open('review-deck', 1);
+    q.onupgradeneeded = function(){ q.result.createObjectStore('kv'); };
+    q.onsuccess = function(){ res(q.result); };
+    q.onerror = function(){ rej(q.error); };
+  });
+}
+function idbSet(k, v){
+  return idb().then(function(db){
+    return new Promise(function(res, rej){
+      var tx = db.transaction('kv', 'readwrite');
+      tx.objectStore('kv').put(v, k);
+      tx.oncomplete = res;
+      tx.onerror = function(){ rej(tx.error); };
+    });
+  });
+}
+function idbGet(k){
+  return idb().then(function(db){
+    return new Promise(function(res, rej){
+      var rq = db.transaction('kv', 'readonly').objectStore('kv').get(k);
+      rq.onsuccess = function(){ res(rq.result); };
+      rq.onerror = function(){ rej(rq.error); };
+    });
+  });
+}
+function updateSaveUi(){
+  var ex = $('#btn-export'), cn = $('#btn-connect');
+  if(dirHandle){
+    ex.hidden = true;
+    cn.disabled = true;
+    cn.textContent = 'Connected ✓';
+  } else {
+    ex.hidden = false;
+    cn.disabled = false;
+    if(window.showDirectoryPicker){
+      ex.textContent = 'Save to review folder';
+      ex.title = 'Pick the review round directory once — comments save straight into it (and live from then on)';
+      cn.textContent = storedHandle ? 'Reconnect review folder' : 'Connect review folder';
+    } else {
+      ex.textContent = 'Export comments';
+      ex.title = 'Download comments.user.md (this browser cannot write files in place)';
+    }
+  }
+}
+function adoptDir(h, persist){
+  dirHandle = h;
+  $('#fsa-status').textContent = 'live-saving to "' + h.name + '"';
+  if(persist && window.indexedDB) idbSet('dir:' + data.id, h).catch(function(){});
+  writeDisk();
+  updateSaveUi();
+}
+function pickDir(){
+  return window.showDirectoryPicker({mode:'readwrite'}).then(function(h){
+    adoptDir(h, true);
+    return true;
+  }, function(){ return false; });
+}
+function reconnectDir(){
+  if(!storedHandle || !storedHandle.requestPermission) return pickDir();
+  return storedHandle.requestPermission({mode:'readwrite'}).then(function(p){
+    if(p === 'granted'){ adoptDir(storedHandle, false); return true; }
+    return pickDir();
+  }, function(){ return pickDir(); });
+}
 $('#btn-connect').addEventListener('click', function(){
   if(!window.showDirectoryPicker){
     alert('This browser does not support the File System Access API.\nUse "Export comments" instead — it downloads the same file.');
     return;
   }
-  window.showDirectoryPicker({mode:'readwrite'}).then(function(h){
-    dirHandle = h;
-    $('#fsa-status').textContent = 'connected: ' + h.name;
-    writeDisk();
-  }, function(){});
+  reconnectDir();
 });
+if(window.showDirectoryPicker && window.indexedDB){
+  idbGet('dir:' + data.id).then(function(h){
+    if(!h || !h.queryPermission) return;
+    storedHandle = h;
+    h.queryPermission({mode:'readwrite'}).then(function(p){
+      if(p === 'granted') adoptDir(h, false);
+      else updateSaveUi();
+    }, function(){});
+  }).catch(function(){});
+}
+updateSaveUi();
 function scheduleDisk(){
   if(!dirHandle) return;
   clearTimeout(diskTimer);

@@ -57,9 +57,9 @@ Because AI-assisted work produces *a lot* of diff, Claude also budgets your atte
 
 - Click any diff line (or press `c` on the focused line) to comment. Comments support edit, delete, and resolve.
 - Every AI note has a **Dismiss** button — mark a note you don't want the AI to act on. Dismissed notes are dimmed, ride along in the `comments.user.md` export, and both `/deck-respond` and the next round's reviewer are instructed to leave them (and equivalent findings) alone. **Restore** un-dismisses.
-- **Saving comments**, two ways:
-  1. **Connect review folder** (Chromium-only: Chrome, Edge, Brave, …) — uses the File System Access API to write `comments.user.md` live into the review directory as you type. Firefox and Safari do not support this API.
-  2. **Export comments** (all browsers) — downloads `comments.user.md`; move it into the review directory. There is also **Copy as Markdown**.
+- **Saving comments**:
+  1. **Save to review folder / Connect review folder** (Chromium-only: Chrome, Edge, Brave, …) — pick the review round directory once; `comments.user.md` is written straight into it, and live from then on. The folder handle is remembered (IndexedDB), so on the next visit the page reconnects by itself — tick "Allow on every visit" in Chrome's permission prompt and it's fully automatic; otherwise it's one "Reconnect" click.
+  2. In browsers without the File System Access API (Firefox, Safari) the button falls back to **Export comments** — a plain download to move into the review directory yourself (a browser can't write to an arbitrary path without a user-granted handle). There is also **Copy as Markdown**.
   - Either way, comments are buffered in `localStorage` keyed by review id, so closing the tab loses nothing.
 - Changed lines get **word-level highlighting** — the exact edited span inside a modified line pair lights up, so long lines read at a glance.
 - Marking a file **Viewed** collapses it; the page also remembers your scroll position, so you resume exactly where you left off.
