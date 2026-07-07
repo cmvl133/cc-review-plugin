@@ -86,7 +86,12 @@ Notes anchor to **hunk index + exact line content** — never absolute line numb
 
 ## comments.user.md format
 
-Written by the HTML page (export / File System Access API), parsed by the script for round-trips. An optional `## dismissed AI notes` section lists notes the user marked **Dismiss** in the page — the AI must not act on these and must not re-raise the same finding in later rounds (`build_review.py` ignores this section; it is consumed by `/deck-respond` and `/deck-review`). Then one section per comment, terminated by `---`:
+Written by the HTML page (export / File System Access API), parsed by the script for round-trips. Two optional leading sections (both ignored by `build_review.py`, consumed by `/deck-respond` and `/deck-review`):
+
+- `## dismissed AI notes` — notes the user marked **Dismiss**: the AI must not act on these and must not re-raise the same finding in later rounds.
+- `## note reactions` — 👍/👎 votes on AI notes (`- <id> · up|down · <file> · <title>`): calibration signal. Downvoted notes are noise to that user — future review rounds should avoid producing similar ones; upvotes reinforce.
+
+Then one section per comment, terminated by `---`. A comment may carry `- type: fix|question|nit|discuss` (set via chips in the composer) — `/deck-respond` uses it to act without guessing intent:
 
 ```
 # review-deck comments
@@ -106,6 +111,7 @@ Written by the HTML page (export / File System Access API), parsed by the script
 
 - author: user
 - time: 2026-07-06T10:00:00Z
+- type: fix
 - resolved: no
 
 The comment body (may span multiple lines).

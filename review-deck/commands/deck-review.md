@@ -42,7 +42,7 @@ You are the conductor: you may hold context the subagent cannot see.
 
 **3c. Explanatory notes (`info`)** — if the changes were authored in this session or you have a plan/context: write these yourself, as the author explaining intent. One note per meaningful piece of the change: what it does and *why it exists*. Do not delegate these — a context-free agent would only guess at intent. If you have no context at all, skip this step (the subagent covers it in 3d).
 
-**3d. Critique notes (`warning`/`suggestion`)** — first check the previous round's `comments.user.md` (found as in step 4) for a `## dismissed AI notes` section: those findings the user explicitly closed. Then launch the reviewer agents **in parallel**:
+**3d. Critique notes (`warning`/`suggestion`)** — first check the previous round's `comments.user.md` (found as in step 4) for a `## dismissed AI notes` section (findings the user explicitly closed) and a `## note reactions` section (👍/👎 calibration: downvoted notes were noise — tell the reviewers what kinds of notes to avoid; upvoted kinds are worth reinforcing). Then launch the reviewer agents **in parallel**:
 
 - the bundled `code-reviewer` agent (unless config sets `bundledReviewer: false`);
 - every agent named in config `reviewers` (project-defined specialists).

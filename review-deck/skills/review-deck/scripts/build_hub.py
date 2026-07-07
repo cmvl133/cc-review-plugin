@@ -116,6 +116,26 @@ a:hover{text-decoration:underline}
 .badge{display:inline-block;padding:0 8px;border-radius:10px;font-size:11px;font-weight:600;
   background:var(--warn-bg);color:var(--warn-fg);white-space:nowrap}
 .empty{color:var(--muted);font-style:italic;padding:24px 0;text-align:center}
+#wrapped{border:1px solid var(--border);border-radius:8px;margin-bottom:16px;padding:12px 16px;background:var(--panel)}
+#wrapped .w-head{display:flex;align-items:center;gap:10px}
+#wrapped h2{margin:0;font-size:15px;flex:1}
+#wrapped button{font:inherit;font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--border);
+  background:var(--bg);color:var(--fg);cursor:pointer}
+#wrapped button:hover{border-color:var(--accent)}
+.w-grid{display:flex;gap:22px;margin:10px 0 4px;flex-wrap:wrap}
+.w-stat{font-size:12px;color:var(--muted)}
+.w-stat b{display:block;font-size:22px;color:var(--fg)}
+.w-hot{margin:4px 0 0;font-size:12.5px;color:var(--muted)}
+#gablota{margin-top:12px;border-top:1px solid var(--border);padding-top:10px}
+#gablota h3{margin:0 0 8px;font-size:13px}
+.ach-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px}
+.ach{display:flex;gap:8px;align-items:center;border:1px solid var(--border);border-radius:8px;
+  padding:6px 10px;background:var(--bg);font-size:12px}
+.ach .a-icon{font-size:20px}
+.ach b{display:block;font-size:12px}
+.ach .a-desc{color:var(--muted);font-size:11px}
+.ach.locked{opacity:.45;filter:grayscale(1)}
+.ach .a-date{color:var(--accent);font-size:10.5px}
 </style>
 </head>
 <body>
@@ -124,6 +144,18 @@ a:hover{text-decoration:underline}
   <span class="sub">@@COUNT@@ review(s) across @@REPO_COUNT@@ project(s) &middot; built @@BUILT@@</span>
 </header>
 <main>
+<section id="wrapped">
+  <div class="w-head"><h2>Review Wrapped &mdash; last 7 days</h2>
+  <button id="btn-copy-wrap" title="Copy a summary as markdown">Copy for Slack</button></div>
+  <div class="w-grid">
+    <div class="w-stat"><b>@@WEEK_REVIEWS@@</b>reviews</div>
+    <div class="w-stat"><b>@@WEEK_REPOS@@</b>projects</div>
+    <div class="w-stat"><b>@@UNRESOLVED@@</b>unresolved comments</div>
+    <div class="w-stat" id="w-xp" hidden><b>0</b><span></span></div>
+  </div>
+  <p class="w-hot">@@HOT_LINE@@</p>
+  <div id="gablota" hidden><h3>Achievements</h3><div class="ach-grid"></div></div>
+</section>
 @@BODY@@
 </main>
 <script>
@@ -140,6 +172,57 @@ a:hover{text-decoration:underline}
   Array.prototype.forEach.call(document.querySelectorAll('a[href^="file:///"]'), function(a){
     a.href = prefix + a.href.slice('file://'.length);
   });
+})();
+</script>
+<script>
+(function(){
+'use strict';
+function lsGet(k, d){ try{ var v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); }catch(e){ return d; } }
+var CATALOG = [
+  {id:'first-words', icon:'💬', name:'First words', desc:'Write your first comment'},
+  {id:'nitpicker', icon:'🔬', name:'Nitpicker', desc:'10 comments in a single review'},
+  {id:'completionist', icon:'✅', name:'Completionist', desc:'View every file in a review'},
+  {id:'speedrunner', icon:'⚡', name:'Speedrunner', desc:'Full review in under 5 minutes'},
+  {id:'night-shift', icon:'🌙', name:'Night shift', desc:'Review after 23:00'},
+  {id:'marathon', icon:'🏃', name:'Marathon', desc:'Open 10 different reviews'},
+  {id:'exterminator', icon:'🧯', name:'Exterminator', desc:'Handle every finding in the digest'},
+  {id:'critic', icon:'🗑️', name:'Critic', desc:'Dismiss 5 AI notes (lifetime)'},
+  {id:'level-5', icon:'🏆', name:'Level 5', desc:'Reach level 5'},
+  {id:'insert-coin', icon:'🕹️', name:'Insert coin', desc:'Turn on arcade mode'}
+];
+var xp = lsGet('rd:xp', 0), ach = lsGet('rd:ach', {}), arcade = lsGet('rd:arcade', false);
+if(arcade || xp > 0){
+  var w = document.getElementById('w-xp');
+  w.hidden = false;
+  w.querySelector('b').textContent = xp + ' XP';
+  w.querySelector('span').textContent = 'level ' + (1 + Math.floor(xp / 100));
+}
+var earned = Object.keys(ach).length;
+if(arcade || earned > 0){
+  document.getElementById('gablota').hidden = false;
+  var grid = document.querySelector('.ach-grid');
+  CATALOG.forEach(function(a){
+    var d = document.createElement('div');
+    d.className = 'ach' + (ach[a.id] ? '' : ' locked');
+    d.innerHTML = '<span class="a-icon">' + a.icon + '</span><span><b>' + a.name + '</b>' +
+      '<span class="a-desc">' + a.desc + '</span>' +
+      (ach[a.id] ? '<span class="a-date">unlocked ' + ach[a.id] + '</span>' : '') + '</span>';
+    grid.appendChild(d);
+  });
+}
+document.getElementById('btn-copy-wrap').addEventListener('click', function(){
+  var md = '**Review Wrapped — last 7 days**\n' +
+    '- reviews: @@WEEK_REVIEWS@@ across @@WEEK_REPOS@@ project(s)\n' +
+    '- unresolved comments: @@UNRESOLVED@@\n' +
+    '@@HOT_MD@@' +
+    (xp > 0 ? '- XP: ' + xp + ' (level ' + (1 + Math.floor(xp / 100)) + '), achievements: ' + earned + '/' + CATALOG.length + '\n' : '');
+  (navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(md) : Promise.reject())
+    .then(function(){
+      var b = document.getElementById('btn-copy-wrap');
+      b.textContent = 'Copied!';
+      setTimeout(function(){ b.textContent = 'Copy for Slack'; }, 1500);
+    }, function(){});
+});
 })();
 </script>
 </body>
@@ -186,10 +269,31 @@ def build_index(d, reg):
 
     body = "".join(b[1] for b in repo_blocks) if repo_blocks \
         else '<p class="empty">No reviews registered yet. Run /deck-review in any project.</p>'
+
+    now_ts = datetime.now().timestamp()
+    week = [e for e in reg["reviews"] if now_ts - entry_mtime(e) < 7 * 86400]
+    week_repos = {e.get("repo_root") for e in week}
+    unresolved = sum(count_unresolved(e["html"]) or 0 for e in reg["reviews"])
+    hot_line = hot_md = ""
+    if week:
+        per_repo = {}
+        for e in week:
+            per_repo[e.get("repo_root", "?")] = per_repo.get(e.get("repo_root", "?"), 0) + 1
+        hot_root, hot_n = max(per_repo.items(), key=lambda kv: kv[1])
+        hot_name = Path(hot_root).name or hot_root
+        hot_line = "Hottest project: <b>%s</b> (%d review%s this week)" % (
+            esc(hot_name), hot_n, "s" if hot_n != 1 else "")
+        hot_md = "- hottest project: %s (%d)\\n" % (hot_name.replace("'", ""), hot_n)
+
     out = (HUB_TEMPLATE
            .replace("@@COUNT@@", str(len(reg["reviews"])))
            .replace("@@REPO_COUNT@@", str(len(by_repo)))
            .replace("@@BUILT@@", esc(datetime.now().strftime("%Y-%m-%d %H:%M")))
+           .replace("@@WEEK_REVIEWS@@", str(len(week)))
+           .replace("@@WEEK_REPOS@@", str(len(week_repos)))
+           .replace("@@UNRESOLVED@@", str(unresolved))
+           .replace("@@HOT_LINE@@", hot_line)
+           .replace("@@HOT_MD@@", hot_md)
            .replace("@@BODY@@", body))
     index = d / "index.html"
     d.mkdir(parents=True, exist_ok=True)

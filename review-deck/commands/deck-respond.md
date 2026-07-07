@@ -37,7 +37,12 @@ For each unresolved comment, in file order:
 
 1. Quote it briefly (file, the anchored line, the comment body).
 2. Read the surrounding code as it exists *now* in the working tree (the diff may be stale).
-3. Reply in-chat: answer questions, explain intent, or acknowledge the issue.
+3. Honor the comment's `type` when present — it removes the guesswork:
+   - `fix` — the user wants a code change: propose the concrete edit (confirmation rules below).
+   - `question` — answer in-chat; do **not** change code unless the answer reveals a real bug and the user agrees.
+   - `nit` — small polish; batch all nits into one grouped proposal, don't deliberate over them individually.
+   - `discuss` — respond with your reasoning/trade-offs; no code changes in this pass.
+   - no type — infer from the body, as before.
 4. If the comment requests a change (or clearly implies one), propose the concrete edit and ask the user to confirm before applying it — unless the user has already told you to apply everything, in which case apply directly. Group trivial confirmed fixes together rather than asking one by one.
 
 ## 4. Close the loop

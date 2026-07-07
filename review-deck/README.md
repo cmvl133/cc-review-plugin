@@ -62,15 +62,21 @@ Because AI-assisted work produces *a lot* of diff, Claude also budgets your atte
   2. In browsers without the File System Access API (Firefox, Safari) the button falls back to **Export comments** — a plain download to move into the review directory yourself (a browser can't write to an arbitrary path without a user-granted handle). There is also **Copy as Markdown**.
   - Either way, comments are buffered in `localStorage` keyed by review id, so closing the tab loses nothing.
 - Changed lines get **word-level highlighting** — the exact edited span inside a modified line pair lights up, so long lines read at a glance.
-- Marking a file **Viewed** collapses it; the page also remembers your scroll position, so you resume exactly where you left off.
+- A **minimap** on the right edge shows change density plus note/comment markers across the whole diff — click or drag to jump.
+- The side panel has two tabs: the **guided tour** and a **findings digest** — every AI note sorted by severity with jump links and "handled" checkboxes.
+- Comments carry a **type** (`fix` / `question` / `nit` / `discuss`, plus one-click canned snippets) so `/deck-respond` knows whether to patch, answer, or discuss. AI notes take **👍/👎** — downvotes teach the next round's reviewers what you consider noise.
+- The header shows an **estimated reading time left**, weighted by triage (mechanical files are nearly free) and ticking down as you mark files viewed.
+- Marking a file **Viewed** collapses it; `]` marks the current file viewed and jumps to the next unviewed one (`Shift+J`/`K` hop between files); the page also remembers your scroll position, so you resume exactly where you left off.
 - Themes: light / dark / solarized / high-contrast / Dracula / Nord / Gruvbox (dark & light) / Monokai / One Dark / Catppuccin (Mocha & Latte) / Tokyo Night / Rosé Pine / Everforest / Ayu Light / custom (color pickers), persisted. Switch freely — your eyes will thank you.
 - Keyboard: `j`/`k` hunks, `n`/`p` AI notes, `c` comment, `v` mark file viewed, `?` help.
 - The sticky header tracks files viewed, AI note count, and unresolved comments.
-- **Arcade mode** (the 🎮 button): earn XP for reviewing — viewing files, commenting, resolving, dismissing — with confetti, levels, and an ALL FILES VIEWED celebration. XP accumulates across all your reviews. Entirely optional, entirely silly, off by default.
+- **Arcade mode** (the 🎮 button): earn XP for reviewing — viewing files, commenting, resolving, dismissing — with confetti, levels, an ALL FILES VIEWED celebration, **achievements** (Nitpicker, Speedrunner, Night shift…), and a **rubber duck** 🦆 that waddles along the diff as you review and quacks when you comment. XP and achievements accumulate across all your reviews and show up in the hub's trophy case. Entirely optional, entirely silly, off by default.
 
 ### `/deck-hub`
 
 One page with **every review across all your projects**. Each `/deck-review` run registers its page in a global registry (`~/.local/share/review-deck/registry.json`, or `$XDG_DATA_HOME/review-deck/`); `/deck-hub` regenerates a self-contained `index.html` from it — reviews grouped by repo, with branch/round, note counts, unresolved-comment badges, last activity, and a direct link to each page — and opens it. No server, no daemon: a static page rebuilt on demand. Entries whose `review.html` was deleted are pruned automatically on every rebuild.
+
+The hub opens with **Review Wrapped** — your last 7 days at a glance (reviews, projects, unresolved comments, hottest repo) with a "Copy for Slack" button — and, once you've played in arcade mode, a **trophy case** of your achievements and XP level (all `file://` pages share localStorage, so the hub reads your stats with zero backend).
 
 ### Plugging in your own tooling
 
