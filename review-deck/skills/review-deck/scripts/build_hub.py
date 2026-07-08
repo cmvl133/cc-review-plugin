@@ -22,7 +22,11 @@ import html
 import json
 import os
 import re
+import ssl
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -64,6 +68,90 @@ def count_unresolved(html_path):
     return len(re.findall(r"(?m)^- resolved:\s*no\s*$", text))
 
 
+def load_config(d):
+    """Optional global hub config: $XDG_DATA_HOME/review-deck/config.json."""
+    p = d / "config.json"
+    try:
+        cfg = json.loads(p.read_text(encoding="utf-8"))
+        return cfg if isinstance(cfg, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def fetch_gitlab_mrs(cfg):
+    """Fetch open MRs where the token's user is assignee or reviewer.
+    cfg: {"url": ..., "token": ... or "token_env": ..., "insecure": bool}.
+    Returns (mrs, error): mrs is a list of dicts, error a message or None."""
+    url = (cfg.get("url") or "").rstrip("/")
+    token = cfg.get("token") or os.environ.get(cfg.get("token_env") or "", "")
+    if not url or not token:
+        return [], "gitlab config incomplete (need url and token/token_env)"
+    ctx = ssl._create_unverified_context() if cfg.get("insecure") else None
+
+    def get(path, params=None):
+        q = ("?" + urllib.parse.urlencode(params)) if params else ""
+        req = urllib.request.Request(url + "/api/v4" + path + q,
+                                     headers={"PRIVATE-TOKEN": token})
+        with urllib.request.urlopen(req, timeout=8, context=ctx) as r:
+            return json.loads(r.read().decode("utf-8"))
+
+    try:
+        me = get("/user")
+        base = {"state": "opened", "scope": "all", "per_page": 50,
+                "order_by": "updated_at"}
+        authored = get("/merge_requests", dict(base, author_id=me["id"]))
+        assigned = get("/merge_requests", dict(base, assignee_id=me["id"]))
+        reviewing = get("/merge_requests", dict(base, reviewer_id=me["id"]))
+    except (urllib.error.URLError, OSError, KeyError, json.JSONDecodeError) as e:
+        return [], "gitlab fetch failed: %s" % e
+
+    mrs = {}
+    for mr, role in ([(m, "author") for m in authored]
+                     + [(m, "assignee") for m in assigned]
+                     + [(m, "reviewer") for m in reviewing]):
+        e = mrs.setdefault(mr["id"], {
+            "title": mr.get("title", "?"),
+            "ref": (mr.get("references") or {}).get("full") or "!%s" % mr.get("iid", "?"),
+            "url": mr.get("web_url", "#"),
+            "notes": mr.get("user_notes_count", 0),
+            "draft": bool(mr.get("draft") or mr.get("work_in_progress")),
+            "conflicts": bool(mr.get("has_conflicts")),
+            "updated": (mr.get("updated_at") or "")[:16].replace("T", " "),
+            "branch": mr.get("source_branch", ""),
+            "roles": [],
+        })
+        if role not in e["roles"]:
+            e["roles"].append(role)
+    return list(mrs.values()), None
+
+
+def render_gitlab_section(mrs, error):
+    parts = ['<section id="mrs"><h2>Merge requests on you</h2>']
+    if error:
+        parts.append('<p class="mr-err">%s</p>' % esc(error))
+    elif not mrs:
+        parts.append('<p class="mr-err">No open merge requests assigned to you. 🎉</p>')
+    else:
+        parts.append('<table>')
+        for m in mrs:
+            badges = ""
+            if m["draft"]:
+                badges += '<span class="badge mr-draft">draft</span> '
+            if m["conflicts"]:
+                badges += '<span class="badge mr-conflict">conflicts</span> '
+            if m["notes"]:
+                badges += '<span class="badge">&#128172; %d</span> ' % m["notes"]
+            roles = ", ".join(m["roles"])
+            parts.append(
+                '<tr><td class="branch"><a href="%s">%s</a> %s</td>'
+                '<td>%s</td><td class="num">%s</td><td class="when">%s</td></tr>'
+                % (esc(m["url"]), esc(m["ref"]), esc(m["title"]),
+                   badges, esc(roles), esc(m["updated"])))
+        parts.append('</table>')
+    parts.append('</section>')
+    return "".join(parts)
+
+
 def prune(reg):
     kept, dropped = [], 0
     for e in reg["reviews"]:
@@ -79,7 +167,7 @@ def esc(s):
     return html.escape(str(s), quote=True)
 
 
-HUB_TEMPLATE = """<!DOCTYPE html>
+HUB_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -126,16 +214,18 @@ a:hover{text-decoration:underline}
 .w-stat{font-size:12px;color:var(--muted)}
 .w-stat b{display:block;font-size:22px;color:var(--fg)}
 .w-hot{margin:4px 0 0;font-size:12.5px;color:var(--muted)}
-#gablota{margin-top:12px;border-top:1px solid var(--border);padding-top:10px}
-#gablota h3{margin:0 0 8px;font-size:13px}
-.ach-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px}
-.ach{display:flex;gap:8px;align-items:center;border:1px solid var(--border);border-radius:8px;
-  padding:6px 10px;background:var(--bg);font-size:12px}
-.ach .a-icon{font-size:20px}
-.ach b{display:block;font-size:12px}
-.ach .a-desc{color:var(--muted);font-size:11px}
-.ach.locked{opacity:.45;filter:grayscale(1)}
-.ach .a-date{color:var(--accent);font-size:10.5px}
+a.chat-btn{display:inline-block;margin-left:10px;padding:0 10px;border-radius:10px;font-size:11px;font-weight:600;
+  background:var(--accent);color:#fff;text-decoration:none}
+a.chat-btn:hover{text-decoration:none;opacity:.85}
+#mrs{border:1px solid var(--border);border-radius:8px;margin-bottom:16px;overflow:hidden}
+#mrs h2{margin:0;padding:8px 14px;background:var(--panel);font-size:14px;border-bottom:1px solid var(--border)}
+#mrs .mr-err{margin:0;padding:10px 14px;color:var(--muted);font-size:12.5px;font-style:italic}
+.rm-btn{margin-left:8px;padding:0 7px;border:1px solid var(--border);border-radius:6px;background:none;
+  color:var(--muted);cursor:pointer;font-size:11px;line-height:1.6}
+.rm-btn:hover{color:#ff6b6b;border-color:#ff6b6b}
+.badge.mr-draft{background:var(--panel);color:var(--muted);border:1px solid var(--border)}
+.badge.mr-conflict{background:#4a0000;color:#ff9f9f}
+@media (prefers-color-scheme: light){.badge.mr-conflict{background:#ffebe9;color:#9a1c1c}}
 </style>
 </head>
 <body>
@@ -154,8 +244,8 @@ a:hover{text-decoration:underline}
     <div class="w-stat" id="w-xp" hidden><b>0</b><span></span></div>
   </div>
   <p class="w-hot">@@HOT_LINE@@</p>
-  <div id="gablota" hidden><h3>Achievements</h3><div class="ach-grid"></div></div>
 </section>
+@@MRS@@
 @@BODY@@
 </main>
 <script>
@@ -178,44 +268,49 @@ a:hover{text-decoration:underline}
 (function(){
 'use strict';
 function lsGet(k, d){ try{ var v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); }catch(e){ return d; } }
-var CATALOG = [
-  {id:'first-words', icon:'💬', name:'First words', desc:'Write your first comment'},
-  {id:'nitpicker', icon:'🔬', name:'Nitpicker', desc:'10 comments in a single review'},
-  {id:'completionist', icon:'✅', name:'Completionist', desc:'View every file in a review'},
-  {id:'speedrunner', icon:'⚡', name:'Speedrunner', desc:'Full review in under 5 minutes'},
-  {id:'night-shift', icon:'🌙', name:'Night shift', desc:'Review after 23:00'},
-  {id:'marathon', icon:'🏃', name:'Marathon', desc:'Open 10 different reviews'},
-  {id:'exterminator', icon:'🧯', name:'Exterminator', desc:'Handle every finding in the digest'},
-  {id:'critic', icon:'🗑️', name:'Critic', desc:'Dismiss 5 AI notes (lifetime)'},
-  {id:'level-5', icon:'🏆', name:'Level 5', desc:'Reach level 5'},
-  {id:'insert-coin', icon:'🕹️', name:'Insert coin', desc:'Turn on arcade mode'}
-];
-var xp = lsGet('rd:xp', 0), ach = lsGet('rd:ach', {}), arcade = lsGet('rd:arcade', false);
+var xp = lsGet('rd:xp', 0), arcade = lsGet('rd:arcade', false);
 if(arcade || xp > 0){
   var w = document.getElementById('w-xp');
   w.hidden = false;
   w.querySelector('b').textContent = xp + ' XP';
   w.querySelector('span').textContent = 'level ' + (1 + Math.floor(xp / 100));
 }
-var earned = Object.keys(ach).length;
-if(arcade || earned > 0){
-  document.getElementById('gablota').hidden = false;
-  var grid = document.querySelector('.ach-grid');
-  CATALOG.forEach(function(a){
-    var d = document.createElement('div');
-    d.className = 'ach' + (ach[a.id] ? '' : ' locked');
-    d.innerHTML = '<span class="a-icon">' + a.icon + '</span><span><b>' + a.name + '</b>' +
-      '<span class="a-desc">' + a.desc + '</span>' +
-      (ach[a.id] ? '<span class="a-date">unlocked ' + ach[a.id] + '</span>' : '') + '</span>';
-    grid.appendChild(d);
+/* chat buttons appear only when the deck-chat server is running (start it
+   with /chat); the fetch works from file:// thanks to CORS * on the server */
+fetch('http://127.0.0.1:7787/api/ping').then(function(r){ return r.json(); }).then(function(){
+  Array.prototype.forEach.call(document.querySelectorAll('a.chat-btn'), function(a){ a.hidden = false; });
+}).catch(function(){});
+
+/* review removal: with the deck-chat server running the entry is removed from
+   the registry for good; otherwise it is hidden locally (localStorage) and
+   stays hidden across rebuilds. Files in .code-review/ are never touched. */
+var hubHidden = lsGet('rd:hubHidden', []);
+function lsSetHidden(){ try{ localStorage.setItem('rd:hubHidden', JSON.stringify(hubHidden)); }catch(e){} }
+Array.prototype.forEach.call(document.querySelectorAll('tr[data-html]'), function(tr){
+  if(hubHidden.indexOf(tr.getAttribute('data-html')) >= 0) tr.style.display = 'none';
+});
+Array.prototype.forEach.call(document.querySelectorAll('.rm-btn'), function(b){
+  b.addEventListener('click', function(){
+    var tr = b.closest('tr');
+    var html = tr.getAttribute('data-html');
+    if(!confirm('Remove this review from the hub?')) return;
+    fetch('http://127.0.0.1:7787/api/remove-review', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({html: html})
+    }).then(function(r){ if(!r.ok) throw 0; tr.remove(); })
+      .catch(function(){
+        hubHidden.push(html);
+        lsSetHidden();
+        tr.style.display = 'none';
+      });
   });
-}
+});
 document.getElementById('btn-copy-wrap').addEventListener('click', function(){
   var md = '**Review Wrapped — last 7 days**\n' +
     '- reviews: @@WEEK_REVIEWS@@ across @@WEEK_REPOS@@ project(s)\n' +
     '- unresolved comments: @@UNRESOLVED@@\n' +
     '@@HOT_MD@@' +
-    (xp > 0 ? '- XP: ' + xp + ' (level ' + (1 + Math.floor(xp / 100)) + '), achievements: ' + earned + '/' + CATALOG.length + '\n' : '');
+    (xp > 0 ? '- XP: ' + xp + ' (level ' + (1 + Math.floor(xp / 100)) + ')\n' : '');
   (navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(md) : Promise.reject())
     .then(function(){
       var b = document.getElementById('btn-copy-wrap');
@@ -255,11 +350,16 @@ def build_index(d, reg):
             badge = ('<span class="badge">%d unresolved</span>' % unresolved
                      if unresolved else "")
             counts = "%s files &middot; %s notes" % (e.get("files", "?"), e.get("notes", "?"))
+            chat = ('<a class="chat-btn" data-session="%s" href="http://127.0.0.1:7787/#%s" hidden>Chat</a>'
+                    % (esc(e["session_id"]), esc(e["session_id"]))
+                    if e.get("session_id") else "")
             rows.append(
-                '<tr><td class="branch"><a href="%s">%s</a> @ %s</td>'
-                '<td class="num">%s</td><td>%s</td><td class="when">%s</td></tr>'
-                % (esc(Path(e["html"]).as_uri()), esc(e.get("branch", "?")),
-                   esc(e.get("round", "?")), counts, badge, esc(when)))
+                '<tr data-html="%s"><td class="branch"><a href="%s">%s</a> @ %s</td>'
+                '<td class="num">%s</td><td>%s</td><td class="when">%s%s'
+                '<button class="rm-btn" title="Remove this review from the hub '
+                '(the .code-review/ files stay on disk)">&#10005;</button></td></tr>'
+                % (esc(e["html"]), esc(Path(e["html"]).as_uri()), esc(e.get("branch", "?")),
+                   esc(e.get("round", "?")), counts, badge, esc(when), chat))
         name = Path(repo_root).name or repo_root
         repo_blocks.append((max(entry_mtime(e) for e in entries),
                             '<section class="repo"><h2>%s<span class="path">%s</span></h2>'
@@ -268,7 +368,14 @@ def build_index(d, reg):
     repo_blocks.sort(key=lambda b: b[0], reverse=True)
 
     body = "".join(b[1] for b in repo_blocks) if repo_blocks \
-        else '<p class="empty">No reviews registered yet. Run /deck-review in any project.</p>'
+        else '<p class="empty">No reviews registered yet. Run /review in any project.</p>'
+
+    cfg = load_config(d)
+    mrs_html, gitlab_stat = "", "not configured"
+    if isinstance(cfg.get("gitlab"), dict):
+        mrs, gl_err = fetch_gitlab_mrs(cfg["gitlab"])
+        mrs_html = render_gitlab_section(mrs, gl_err)
+        gitlab_stat = gl_err or len(mrs)
 
     now_ts = datetime.now().timestamp()
     week = [e for e in reg["reviews"] if now_ts - entry_mtime(e) < 7 * 86400]
@@ -294,11 +401,12 @@ def build_index(d, reg):
            .replace("@@UNRESOLVED@@", str(unresolved))
            .replace("@@HOT_LINE@@", hot_line)
            .replace("@@HOT_MD@@", hot_md)
+           .replace("@@MRS@@", mrs_html)
            .replace("@@BODY@@", body))
     index = d / "index.html"
     d.mkdir(parents=True, exist_ok=True)
     index.write_text(out, encoding="utf-8")
-    return index
+    return index, gitlab_stat
 
 
 def main(argv=None):
@@ -311,6 +419,8 @@ def main(argv=None):
     reg_p.add_argument("--round", required=True)
     reg_p.add_argument("--review-html", required=True)
     reg_p.add_argument("--title", default="")
+    reg_p.add_argument("--session-id", default="",
+                       help="Claude Code session id that authored the review (enables chat)")
     reg_p.add_argument("--files", type=int, default=None)
     reg_p.add_argument("--hunks", type=int, default=None)
     reg_p.add_argument("--notes", type=int, default=None)
@@ -328,9 +438,12 @@ def main(argv=None):
             return 1
         key = (str(Path(args.repo_root).resolve()), args.branch, args.round)
         entry = {
-            "repo_root": key[0], "branch": args.branch, "round": args.round,
+            "repo_root": key[0], "repo_name": Path(key[0]).name or key[0],
+            "branch": args.branch, "round": args.round,
             "title": args.title, "html": html_path,
         }
+        if args.session_id:
+            entry["session_id"] = args.session_id
         for k in ("files", "hunks", "notes"):
             v = getattr(args, k)
             if v is not None:
@@ -341,10 +454,11 @@ def main(argv=None):
 
     dropped = prune(reg)
     save_registry(d, reg)
-    index = build_index(d, reg)
+    index, gitlab_stat = build_index(d, reg)
 
     print(json.dumps({"index": str(index), "reviews": len(reg["reviews"]),
-                      "pruned": dropped}, indent=2, sort_keys=True))
+                      "pruned": dropped, "gitlab": gitlab_stat},
+                     indent=2, sort_keys=True))
     return 0
 
 

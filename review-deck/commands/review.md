@@ -35,7 +35,7 @@ You are the conductor: you may hold context the subagent cannot see.
 
 **3b. Overview, triage, tour, checklist** — write these `notes.ai.json` objects (schemas in SKILL.md), scaling each to the diff — omit what a small diff doesn't need:
 
-- `overview`: a reader's introduction. `body` (markdown): what this change is, why it exists, and where to start reading — name the entry point and how control flows from it through the changed pieces. Add `diagrams` (mermaid source, e.g. `flowchart` or `sequenceDiagram`) **only when the change has a flow worth drawing** — a request path through a web app, a new pipeline, interacting components. A config tweak or single-function change needs no diagram.
+- `overview`: a reader's introduction. `body` (markdown): what this change is, why it exists, and where to start reading — name the entry point and how control flows from it through the changed pieces. Format it as real markdown: blank lines between paragraphs, every list item (`- ` or `1. `) on its own line, `###` for sub-headings — never run enumerations together inside one paragraph. Add `diagrams` (mermaid source, e.g. `flowchart` or `sequenceDiagram`) **only when the change has a flow worth drawing** — a request path through a web app, a new pipeline, interacting components. A config tweak or single-function change needs no diagram.
 - `triage`: classify **every** file — `risky` (security, money, concurrency, data migrations), `core` (real logic), `skim`, or `mechanical` (renames, lockfiles, generated code, boilerplate) — each with a short `reason`. Be honest about `mechanical`: its whole point is letting the reviewer safely skip it. Set `untested: true` on files whose changed logic no test in the diff exercises.
 - `tour`: for diffs where reading order aids comprehension (≥3 interrelated files), 3–10 anchored steps telling the story of the change: entry point → core logic → periphery. Skip for trivial diffs.
 - `checklist`: when you have a plan/intent (from the brief), map each plan item to `done`/`partial`/`missing` with an anchor where implemented. Its job is to catch what the change *silently didn't do* — never omit an item because it's missing from the diff; that's exactly the item to include.
@@ -57,7 +57,13 @@ Look for other round dirs under `<repo-root>/.code-review/<branch-slug>/` that c
 
 ## 5. Build the HTML
 
-Run:
+First capture **this session's id** — it powers the in-page "Author chat" drawer and the hub's Chat button (`/chat`). Transcripts live under `~/.claude/projects/<encoded-cwd>/`, where encoded-cwd is the session's working directory with every `/` and `.` replaced by `-`; the most recently modified `.jsonl` is the current session:
+
+```
+SID=$(basename "$(ls -t ~/.claude/projects/$(pwd | sed 's|[/.]|-|g')/*.jsonl 2>/dev/null | head -1)" .jsonl)
+```
+
+Then run (omit `--session-id` if the capture produced nothing):
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/skills/review-deck/scripts/build_review.py" \
@@ -67,6 +73,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/skills/review-deck/scripts/build_review.py" \
   --notes-md <dir>/notes.ai.md \
   --title "<branch-slug>: <base>..<head>" \
   --ensure-gitignore <repo-root> \
+  --session-id "$SID" \
   --contrib-dir <repo-root>/.code-review/<branch-slug>/contrib \
   [--prev-comments <path-to-previous-comments.user.md>]
 ```
@@ -77,16 +84,19 @@ The script prints a JSON summary (files, hunks, anchored/unanchored notes, overv
 
 ## 6. Register in the hub
 
-Add the review to the cross-project hub (best effort — if this fails, mention it and continue, it must not block the review):
+Add the review to the cross-project hub (best effort — if this fails, mention it and continue, it must not block the review). Reuse `$SID` from step 5:
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/skills/review-deck/scripts/build_hub.py" register \
   --repo-root <repo-root> --branch <branch-slug> --round <round-dir> \
   --review-html <dir>/review.html --title "<same title as step 5>" \
+  --session-id "$SID" \
   --files <N> --hunks <N> --notes <N>
 ```
 
-(counts come from step 5's JSON summary; the hub page itself is opened with `/deck-hub`.)
+(omit `--session-id` if the capture produced nothing.)
+
+(counts come from step 5's JSON summary; the hub page itself is opened with `/hub`.)
 
 ## 7. Report and open
 
@@ -95,4 +105,4 @@ python3 "${CLAUDE_PLUGIN_ROOT}/skills/review-deck/scripts/build_hub.py" register
 - Try to open the page (run quietly; if it fails just tell the user to open the file manually — do not treat this as an error). **Always run the open command from inside the review directory** (`cd <dir> && …`) — some misconfigured HTML handlers (e.g. Electron apps) drop profile files into their working directory, and this keeps any such droppings inside the gitignored `.code-review/` instead of the repo root:
   - **WSL** (`grep -qi microsoft /proc/version`): `cd <dir> && explorer.exe "$(wslpath -w review.html)"` — explorer.exe may return a non-zero exit code even on success; ignore it.
   - Linux: `cd <dir> && xdg-open review.html`; macOS: `cd <dir> && open review.html`; Windows: `cd <dir> && start review.html`.
-- Remind the user: comment in the browser, then "Connect review folder" (Chromium) or "Export comments" into the review dir, then run `/deck-respond`.
+- Remind the user: comment in the browser, then "Connect review folder" (Chromium) or "Export comments" into the review dir, then run `/respond`.

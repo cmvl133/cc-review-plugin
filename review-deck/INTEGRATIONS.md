@@ -52,7 +52,7 @@ A contrib fragment is a JSON object with **any subset** of these keys (all optio
 
 `<branch-slug>` = branch name lowercased, non `[a-z0-9._-]` chars replaced with `-`. Create the directory if it doesn't exist (`.code-review/` is always gitignored). One file per tool; re-running your tool overwrites its own file.
 
-The next `/deck-review` on that branch picks up every `*.json` in the directory (sorted by name, deterministic) via `build_review.py --contrib-dir`. You can also call the generator yourself and pass fragments explicitly with repeated `--contrib FILE`.
+The next `/review` on that branch picks up every `*.json` in the directory (sorted by name, deterministic) via `build_review.py --contrib-dir`. You can also call the generator yourself and pass fragments explicitly with repeated `--contrib FILE`.
 
 Merge semantics:
 
@@ -71,7 +71,7 @@ Prints a JSON report (`errors` = entries the merge would skip, `warnings` = qual
 
 ## 4. Project knobs — `.claude/review-deck.json`
 
-Committed project config read by the `/deck-review` command (not by the generator):
+Committed project config read by the `/review` command (not by the generator):
 
 ```json
 {
@@ -82,7 +82,7 @@ Committed project config read by the `/deck-review` command (not by the generato
 }
 ```
 
-- `base` — default diff base for a clean working tree (`git diff <base>...HEAD` when `/deck-review` is run without an argument and there is nothing staged or dirty).
+- `base` — default diff base for a clean working tree (`git diff <base>...HEAD` when `/review` is run without an argument and there is nothing staged or dirty).
 - `exclude` — git pathspec excludes applied when generating the diff (lockfiles, generated bundles, vendored code).
 - `reviewers` — names of *your project's* agents (`.claude/agents/*.md`) to run for critique notes in addition to the bundled `code-reviewer`. Each gets the same context brief + patch and its findings are merged as notes (the conductor normalizes their output to the schema).
 - `bundledReviewer: false` — skip review-deck's own generic reviewer entirely and rely on your specialists.

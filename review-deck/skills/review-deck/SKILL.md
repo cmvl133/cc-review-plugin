@@ -1,6 +1,6 @@
 ---
 name: review-deck
-description: Conventions for generating interactive HTML code reviews from git diffs — the .code-review/ directory layout, the notes.ai.json schema, note anchoring rules, and the build_review.py CLI. Use when running /deck-review or /deck-respond, or when working with .code-review/ directories, notes.ai.json, or comments.user.md files.
+description: Conventions for generating interactive HTML code reviews from git diffs — the .code-review/ directory layout, the notes.ai.json schema, note anchoring rules, and the build_review.py CLI. Use when running /review or /respond, or when working with .code-review/ directories, notes.ai.json, or comments.user.md files.
 ---
 
 # review-deck conventions
@@ -86,12 +86,12 @@ Notes anchor to **hunk index + exact line content** — never absolute line numb
 
 ## comments.user.md format
 
-Written by the HTML page (export / File System Access API), parsed by the script for round-trips. Two optional leading sections (both ignored by `build_review.py`, consumed by `/deck-respond` and `/deck-review`):
+Written by the HTML page (export / File System Access API), parsed by the script for round-trips. Two optional leading sections (both ignored by `build_review.py`, consumed by `/respond` and `/review`):
 
 - `## dismissed AI notes` — notes the user marked **Dismiss**: the AI must not act on these and must not re-raise the same finding in later rounds.
 - `## note reactions` — 👍/👎 votes on AI notes (`- <id> · up|down · <file> · <title>`): calibration signal. Downvoted notes are noise to that user — future review rounds should avoid producing similar ones; upvotes reinforce.
 
-Then one section per comment, terminated by `---`. A comment may carry `- type: fix|question|nit|discuss` (set via chips in the composer) — `/deck-respond` uses it to act without guessing intent:
+Then one section per comment, terminated by `---`. A comment may carry `- type: fix|question|nit|discuss` (set via chips in the composer) — `/respond` uses it to act without guessing intent:
 
 ```
 # review-deck comments
@@ -123,13 +123,13 @@ The comment body (may span multiple lines).
 
 `scripts/build_hub.py` maintains a registry of every generated review at `$XDG_DATA_HOME/review-deck/` (default `~/.local/share/review-deck/`): `registry.json` plus a self-contained `index.html` listing all reviews across all projects, grouped by repo, with `file://` links to each `review.html`.
 
-- `/deck-review` registers each review after building it (`build_hub.py register …` — best effort, never blocks the review).
-- `/deck-hub` rebuilds and opens the page (`build_hub.py build`).
+- `/review` registers each review after building it (`build_hub.py register …` — best effort, never blocks the review).
+- `/hub` rebuilds and opens the page (`build_hub.py build`).
 - Every rebuild prunes entries whose `review.html` no longer exists — deleting a `.code-review/` dir is how reviews leave the hub. No daemon, no server: it's a static page regenerated on demand.
 
 ## External contributions (contrib fragments)
 
-External tooling plugs in by dropping JSON fragments (any subset of `notes` / `triage` / `tour` / `checklist` / `overview`, anchored by `file` + `line`) into `<repo-root>/.code-review/<branch-slug>/contrib/`. `/deck-review` merges them via `--contrib-dir`: notes and checklist items are appended with a source badge, contrib triage only fills unclassified files, contrib overview/tour apply only when the main review has none. Invalid entries are skipped with stderr warnings — a bad fragment never breaks the build. Full contract, merge semantics, and adapter examples: `INTEGRATIONS.md` (plugin root). Project knobs (`base`, `exclude`, `reviewers`, `bundledReviewer`) live in `<repo-root>/.claude/review-deck.json`.
+External tooling plugs in by dropping JSON fragments (any subset of `notes` / `triage` / `tour` / `checklist` / `overview`, anchored by `file` + `line`) into `<repo-root>/.code-review/<branch-slug>/contrib/`. `/review` merges them via `--contrib-dir`: notes and checklist items are appended with a source badge, contrib triage only fills unclassified files, contrib overview/tour apply only when the main review has none. Invalid entries are skipped with stderr warnings — a bad fragment never breaks the build. Full contract, merge semantics, and adapter examples: `INTEGRATIONS.md` (plugin root). Project knobs (`base`, `exclude`, `reviewers`, `bundledReviewer`) live in `<repo-root>/.claude/review-deck.json`.
 
 ## build_review.py CLI
 

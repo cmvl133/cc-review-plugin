@@ -6,7 +6,7 @@ Process the user's comments from the most recent review-deck round and close the
 
 ## 1. Locate the comments
 
-- Repo root: `git rev-parse --show-toplevel`; branch slug as in `/deck-review` (lowercased branch name, non `[a-z0-9._-]` chars → `-`).
+- Repo root: `git rev-parse --show-toplevel`; branch slug as in `/review` (lowercased branch name, non `[a-z0-9._-]` chars → `-`).
 - Find the newest round dir under `<repo-root>/.code-review/<branch-slug>/` (by modification time) that contains `comments.user.md`. If the branch has round dirs but none has `comments.user.md`, ask the user to export their comments from the review page first (the "Export comments" button downloads `comments.user.md` — it must be saved/moved into the round directory; with "Connect review folder" in Chromium it is written there automatically). Then stop and wait.
 
 ## 2. Parse and triage
@@ -48,4 +48,4 @@ For each unresolved comment, in file order:
 ## 4. Close the loop
 
 - Summarize: how many comments were addressed with code changes, answered only, or deferred (and how many AI notes the user dismissed, if any).
-- Offer to run `/deck-review` again to generate the next review round (the new page will carry over any comments still unresolved, flagged "from previous round").
+- Offer to run `/review` again to generate the next review round (the new page will carry over any comments still unresolved, flagged "from previous round").

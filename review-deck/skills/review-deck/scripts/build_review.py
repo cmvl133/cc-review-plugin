@@ -451,21 +451,25 @@ def md_render(text):
     i = 0
     para = []
     ul = []
+    ol = []
 
     def flush_para():
         if para:
             out.append("<p>" + _md_inline(" ".join(para)) + "</p>")
             para.clear()
 
-    def flush_ul():
+    def flush_lists():
         if ul:
             out.append("<ul>" + "".join("<li>%s</li>" % _md_inline(x) for x in ul) + "</ul>")
             ul.clear()
+        if ol:
+            out.append("<ol>" + "".join("<li>%s</li>" % _md_inline(x) for x in ol) + "</ol>")
+            ol.clear()
 
     while i < len(lines):
         ln = lines[i]
         if ln.startswith("```"):
-            flush_para(); flush_ul()
+            flush_para(); flush_lists()
             code = []
             i += 1
             while i < len(lines) and not lines[i].startswith("```"):
@@ -474,20 +478,44 @@ def md_render(text):
             out.append("<pre><code>%s</code></pre>" % html.escape("\n".join(code), quote=False))
             i += 1
             continue
+        m = re.match(r"^(#{1,5})\s+(.*)$", ln)
+        if m:
+            flush_para(); flush_lists()
+            level = min(len(m.group(1)) + 2, 6)  # md h1 -> h3, keeps page h2s on top
+            out.append("<h%d>%s</h%d>" % (level, _md_inline(m.group(2)), level))
+            i += 1
+            continue
         m = re.match(r"^\s*[-*]\s+(.*)$", ln)
         if m:
             flush_para()
+            if ol:
+                flush_lists()
             ul.append(m.group(1))
             i += 1
             continue
-        if not ln.strip():
-            flush_para(); flush_ul()
+        m = re.match(r"^\s*\d+[.)]\s+(.*)$", ln)
+        if m:
+            flush_para()
+            if ul:
+                flush_lists()
+            ol.append(m.group(1))
             i += 1
             continue
-        flush_ul()
+        if not ln.strip():
+            flush_para(); flush_lists()
+            i += 1
+            continue
+        if ul or ol:
+            # indented continuation of the previous list item
+            if ln.startswith(("  ", "\t")):
+                target = ul if ul else ol
+                target[-1] += " " + ln.strip()
+                i += 1
+                continue
+            flush_lists()
         para.append(ln.strip())
         i += 1
-    flush_para(); flush_ul()
+    flush_para(); flush_lists()
     return "".join(out)
 
 
@@ -835,7 +863,8 @@ def render_file_section(fd, fidx, anchored, unanchored_notes, triage=None, row_i
     return "".join(parts)
 
 
-def build_html(files, notes_doc, prev_comments, title, review_id, template):
+def build_html(files, notes_doc, prev_comments, title, review_id, template,
+               session_id="", repo_root=""):
     notes = list(notes_doc.get("notes", []))
     triage_map = {t.get("file"): t for t in notes_doc.get("triage", [])
                   if isinstance(t, dict)}
@@ -943,6 +972,8 @@ def build_html(files, notes_doc, prev_comments, title, review_id, template):
         "base": notes_doc.get("base", ""),
         "head": notes_doc.get("head", ""),
         "generated": notes_doc.get("generated_at", ""),
+        "session_id": session_id,
+        "repo_root": repo_root,
         "files": [{"path": fd.path, "lang": detect_lang(fd.path)} for fd in files],
         "prev": prev,
     }
@@ -1187,6 +1218,13 @@ tr.ln.cur td.code{box-shadow:inset 0 0 0 2px var(--accent)}
 #overview h2{margin:0 0 8px;font-size:15px}
 #overview .ov-body{font-size:13.5px}
 #overview .ov-body p{margin:6px 0}
+#overview .ov-body ul,#overview .ov-body ol{margin:6px 0;padding-left:24px}
+#overview .ov-body li{margin:3px 0}
+#overview .ov-body h3,#overview .ov-body h4,#overview .ov-body h5{margin:12px 0 4px;font-size:13.5px}
+#overview .ov-body h3{font-size:14px}
+.ai-note .nb ul,.ai-note .nb ol{margin:6px 0;padding-left:22px}
+.ai-note .nb li{margin:2px 0}
+.ai-note .nb h3,.ai-note .nb h4,.ai-note .nb h5{margin:8px 0 4px;font-size:13px}
 #overview .ov-body code{background:var(--bg);border:1px solid var(--border);border-radius:4px;
   padding:0 4px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 #overview .ov-body pre{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;overflow-x:auto}
@@ -1263,6 +1301,19 @@ figure.diagram svg{max-width:100%}
 .badge.type-nit{color:var(--muted)}
 .vote-btn{font-size:11px;padding:1px 6px;opacity:.7}
 .vote-btn.active{opacity:1;background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+#chat{position:fixed;right:0;top:0;bottom:0;z-index:90;width:400px;max-width:92vw;display:flex;flex-direction:column;
+  background:var(--panel);border-left:1px solid var(--border);box-shadow:-6px 0 24px rgba(0,0,0,.25)}
+#chat .ch-head{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--border)}
+#chat .ch-head b{flex:1}
+#chat .ch-head .ch-sub{color:var(--muted);font-size:11px;font-family:ui-monospace,Menlo,Consolas,monospace}
+#chat-log{flex:1;overflow-y:auto;padding:12px}
+#chat .ch-msg{margin:0 0 10px;padding:7px 12px;border-radius:10px;font-size:13px;white-space:pre-wrap;word-break:break-word}
+#chat .ch-msg.user{background:var(--accent);color:var(--accent-fg);margin-left:14%}
+#chat .ch-msg.assistant{background:var(--bg);border:1px solid var(--border);margin-right:8%}
+#chat .ch-msg.meta{background:none;color:var(--muted);font-size:11.5px;text-align:center;padding:2px}
+#chat .ch-inp{display:flex;gap:6px;padding:10px 12px;border-top:1px solid var(--border)}
+#chat .ch-inp textarea{flex:1;font:13px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;padding:7px 9px;
+  border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--fg);resize:none;min-height:40px;max-height:140px}
 #duck{position:absolute;z-index:70;font-size:22px;pointer-events:none;transition:top .5s cubic-bezier(.5,1.5,.5,1),left .4s ease;
   filter:drop-shadow(0 2px 2px rgba(0,0,0,.3))}
 #duck.flip{transform:scaleX(-1)}
@@ -1376,6 +1427,7 @@ kbd{background:var(--bg);border:1px solid var(--border);border-bottom-width:2px;
     </select>
     <span id="xp-chip" hidden></span>
     <button id="btn-arcade" title="Arcade mode: XP + confetti while you review">&#127918;</button>
+    <button id="btn-chat" hidden title="Chat with the Claude session that authored this review (needs the /chat server)">&#128172; Author chat</button>
     <button id="btn-connect" title="Write comments.user.md live into the review folder (Chromium only)">Connect review folder</button>
     <span id="fsa-status"></span>
     <button id="btn-export" class="primary" title="Download comments.user.md">Export comments</button>
@@ -1645,7 +1697,7 @@ $$('.ai-note').forEach(function(el){
     e.preventDefault(); e.stopPropagation();
     var id = el.getAttribute('data-note');
     var i = dismissed.indexOf(id);
-    if(i >= 0) dismissed.splice(i, 1); else { dismissed.push(id); awardXp(3, btn); bumpStat('dismissed'); }
+    if(i >= 0) dismissed.splice(i, 1); else { dismissed.push(id); awardXp(3, btn); }
     lsSet(K + 'dismissedNotes', dismissed);
     refreshDismissed();
     scheduleDisk();
@@ -1862,7 +1914,6 @@ function openComposer(anchorRow, hostCard, editing){
       });
       awardXp(5, anchorRow);
       duckQuack('Kwak!');
-      bumpStat('comments');
     }
     closeComposer();
     saveStore();
@@ -1950,13 +2001,38 @@ function downloadComments(){
   a.remove();
   setTimeout(function(){ URL.revokeObjectURL(a.href); }, 2000);
 }
+/* First choice: the deck-chat server (if running) writes comments.user.md
+   straight into the review directory — no picker, no download. The page
+   sends its own file:// path; the server only ever writes inside
+   .code-review/ dirs. */
+var serverMode = false, serverDown = false;
+function serverSave(){
+  return fetch('http://127.0.0.1:7787/api/save-comments', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({page: decodeURIComponent(location.pathname), content: toMarkdown()})
+  }).then(function(r){
+    if(!r.ok) throw 0;
+    serverMode = true;
+    serverDown = false;
+    $('#fsa-status').textContent = 'saved to review folder ' + new Date().toLocaleTimeString();
+    return true;
+  }).catch(function(){
+    serverDown = true;
+    if(serverMode){ $('#fsa-status').textContent = 'server save failed'; serverMode = false; }
+    return false;
+  });
+}
 $('#btn-export').addEventListener('click', function(){
   if(dirHandle){ writeDisk(); return; }
-  if(window.showDirectoryPicker){
-    reconnectDir().then(function(ok){ if(!ok) downloadComments(); });
-    return;
-  }
-  downloadComments();
+  serverDown = false;  // explicit click: give the server another chance
+  serverSave().then(function(ok){
+    if(ok) return;
+    if(window.showDirectoryPicker){
+      reconnectDir().then(function(picked){ if(!picked) downloadComments(); });
+      return;
+    }
+    downloadComments();
+  });
 });
 $('#btn-copy').addEventListener('click', function(){
   var md = toMarkdown();
@@ -2064,9 +2140,12 @@ if(window.showDirectoryPicker && window.indexedDB){
 }
 updateSaveUi();
 function scheduleDisk(){
-  if(!dirHandle) return;
   clearTimeout(diskTimer);
-  diskTimer = setTimeout(writeDisk, 400);
+  if(dirHandle){ diskTimer = setTimeout(writeDisk, 400); return; }
+  // live-save through the deck-chat server: after the first success every
+  // change lands in comments.user.md automatically; a hard failure stops
+  // retries until the next explicit Export click
+  if(!serverDown) diskTimer = setTimeout(serverSave, 500);
 }
 function writeDisk(){
   if(!dirHandle) return;
@@ -2322,7 +2401,6 @@ function awardXp(n, el, label){
     xpToast('LEVEL ' + xpLevel(xp) + '!');
     confettiBurst(window.innerWidth / 2, window.innerHeight / 3, 120);
   }
-  checkAchievements();
 }
 arcadeBtn.addEventListener('click', function(){
   arcade = !arcade;
@@ -2492,54 +2570,84 @@ function duckQuack(text){
   setTimeout(function(){ q.remove(); }, 1400);
 }
 
-/* ---------------- achievements ---------------- */
-var ach = lsGet('rd:ach', {});
-var stats = lsGet('rd:stats', {});
-var seenReviews = lsGet('rd:seenReviews', []);
-if(seenReviews.indexOf(data.id) < 0){
-  seenReviews.push(data.id);
-  lsSet('rd:seenReviews', seenReviews);
+/* ---------------- author-session chat drawer ----------------
+   Talks to the local /chat server (127.0.0.1:7787). The page makes NO
+   network request until the user clicks the chat button. */
+var CHAT_URL = 'http://127.0.0.1:7787';
+var chatEl = null, chatEs = null, chatStream = null;
+function chatMsg(cls, text){
+  var log = $('#chat-log');
+  var m = document.createElement('div');
+  m.className = 'ch-msg ' + cls;
+  m.textContent = text;
+  log.appendChild(m);
+  log.scrollTop = log.scrollHeight;
+  return m;
 }
-var loadT = performance.now();
-function bumpStat(k){
-  stats[k] = (stats[k] || 0) + 1;
-  lsSet('rd:stats', stats);
+function chatConnect(){
+  chatEs = new EventSource(CHAT_URL + '/api/events?session=' + encodeURIComponent(data.session_id) +
+                           '&repo=' + encodeURIComponent(data.repo_root || ''));
+  chatEs.onopen = function(){ $('#chat .ch-sub').textContent = 'session ' + data.session_id.slice(0, 8) + '… · connected'; };
+  chatEs.onerror = function(){
+    $('#chat .ch-sub').textContent = 'server unreachable';
+    chatMsg('meta', 'deck-chat server is not running — start it with /chat in any Claude Code session, then reopen this drawer.');
+    chatEs.close(); chatEs = null;
+  };
+  chatEs.onmessage = function(m){
+    var d = JSON.parse(m.data);
+    if(d.kind === 'user'){ chatMsg('user', d.text); chatStream = null; }
+    else if(d.kind === 'delta'){
+      if(!chatStream) chatStream = chatMsg('assistant', '');
+      chatStream.textContent += d.text;
+      $('#chat-log').scrollTop = $('#chat-log').scrollHeight;
+    }
+    else if(d.kind === 'assistant'){
+      if(chatStream){ chatStream.textContent = d.text; chatStream = null; }
+      else chatMsg('assistant', d.text);
+    }
+    else if(d.kind === 'tools'){ chatMsg('meta', '🔧 ' + d.names.join(', ')); chatStream = null; }
+    else if(d.kind === 'status'){ chatMsg('meta', d.text); }
+    else if(d.kind === 'result'){ chatStream = null; }
+  };
 }
-var ACHIEVEMENTS = [
-  {id:'first-words', icon:'💬', name:'First words', desc:'Write your first comment',
-   test:function(){ return (stats.comments || 0) >= 1; }},
-  {id:'nitpicker', icon:'🔬', name:'Nitpicker', desc:'10 comments in a single review',
-   test:function(){ return store.items.filter(function(c){ return c.round === 'current'; }).length >= 10; }},
-  {id:'completionist', icon:'✅', name:'Completionist', desc:'View every file in a review',
-   test:function(){ return data.files.length > 0 && viewed.length >= data.files.length; }},
-  {id:'speedrunner', icon:'⚡', name:'Speedrunner', desc:'Full review in under 5 minutes',
-   test:function(){ return data.files.length >= 3 && viewed.length >= data.files.length
-     && (performance.now() - loadT) < 300000; }},
-  {id:'night-shift', icon:'🌙', name:'Night shift', desc:'Review after 23:00',
-   test:function(){ var h = new Date().getHours(); return h >= 23 || h < 5; }},
-  {id:'marathon', icon:'🏃', name:'Marathon', desc:'Open 10 different reviews',
-   test:function(){ return seenReviews.length >= 10; }},
-  {id:'exterminator', icon:'🧯', name:'Exterminator', desc:'Handle every finding in the digest',
-   test:function(){ var cbs = $$('.fnd-cb'); return cbs.length > 0 && cbs.every(function(c){ return c.checked; }); }},
-  {id:'critic', icon:'🗑️', name:'Critic', desc:'Dismiss 5 AI notes (lifetime)',
-   test:function(){ return (stats.dismissed || 0) >= 5; }},
-  {id:'level-5', icon:'🏆', name:'Level 5', desc:'Reach level 5',
-   test:function(){ return xpLevel(xp) >= 5; }},
-  {id:'insert-coin', icon:'🕹️', name:'Insert coin', desc:'Turn on arcade mode',
-   test:function(){ return arcade; }}
-];
-function checkAchievements(){
-  if(!arcade) return;
-  ACHIEVEMENTS.forEach(function(a){
-    if(ach[a.id]) return;
-    var got = false;
-    try{ got = a.test(); }catch(err){}
-    if(!got) return;
-    ach[a.id] = new Date().toISOString().slice(0, 10);
-    lsSet('rd:ach', ach);
-    xpToast(a.icon + ' ' + a.name);
-    confettiBurst(window.innerWidth / 2, window.innerHeight / 3, 70);
+function chatSend(){
+  var ta = $('#chat textarea');
+  var t = ta.value.trim();
+  if(!t) return;
+  ta.value = '';
+  fetch(CHAT_URL + '/api/send', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({session: data.session_id, repo: data.repo_root || '', text: t})
+  }).catch(function(){ chatMsg('meta', 'send failed — is the deck-chat server running? (/chat)'); });
+}
+function chatToggle(){
+  if(chatEl){
+    if(chatEs){ chatEs.close(); chatEs = null; }
+    chatEl.remove(); chatEl = null;
+    return;
+  }
+  chatEl = document.createElement('aside');
+  chatEl.id = 'chat';
+  chatEl.innerHTML =
+    '<div class="ch-head"><b>💬 Author session</b><span class="ch-sub">connecting…</span>' +
+    '<button id="chat-close">✕</button></div>' +
+    '<div id="chat-log"></div>' +
+    '<div class="ch-inp"><textarea placeholder="Ask the session that wrote this change… (Ctrl+Enter)"></textarea>' +
+    '<button class="primary" id="chat-send">Send</button></div>';
+  document.body.appendChild(chatEl);
+  $('#chat-close').addEventListener('click', chatToggle);
+  $('#chat-send').addEventListener('click', chatSend);
+  $('#chat textarea').addEventListener('keydown', function(e){
+    if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); chatSend(); }
+    if(e.key === 'Escape'){ e.stopPropagation(); }
   });
+  chatMsg('meta', 'You are talking to the Claude Code session that generated this review — it has the full context of the change (read-only tools).');
+  chatConnect();
+  $('#chat textarea').focus();
+}
+if(data.session_id){
+  var chatBtn = $('#btn-chat');
+  chatBtn.hidden = false;
+  chatBtn.addEventListener('click', chatToggle);
 }
 
 renderComments();
@@ -2571,6 +2679,9 @@ def main(argv=None):
     ap.add_argument("--notes-md", help="also write notes.ai.md here")
     ap.add_argument("--title", help="page title (default: base..head or patch name)")
     ap.add_argument("--review-id", help="stable id for localStorage keying (default: sha256 of patch)")
+    ap.add_argument("--session-id", default="",
+                    help="Claude Code session id that authored this review — "
+                         "enables the in-page chat drawer (talks to the /chat server)")
     ap.add_argument("--ensure-gitignore", metavar="REPO_ROOT",
                     help="ensure a .code-review/ entry in REPO_ROOT/.gitignore")
     args = ap.parse_args(argv)
@@ -2622,7 +2733,9 @@ def main(argv=None):
         else:
             title = "code review"
 
-    out_html, stats = build_html(files, notes_doc, prev_comments, title, review_id, TEMPLATE)
+    out_html, stats = build_html(files, notes_doc, prev_comments, title, review_id, TEMPLATE,
+                                 session_id=args.session_id,
+                                 repo_root=args.ensure_gitignore or "")
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

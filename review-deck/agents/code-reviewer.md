@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Critiques a git diff for the review-deck plugin. Receives a patch file path plus a context brief from the main session and returns review notes as strict JSON (warning/suggestion; plus info explanations only in no-context mode). Use only from the /deck-review command.
+description: Critiques a git diff for the review-deck plugin. Receives a patch file path plus a context brief from the main session and returns review notes as strict JSON (warning/suggestion; plus info explanations only in no-context mode). Use only from the /review command.
 tools: Read, Grep, Glob, Bash
 ---
 

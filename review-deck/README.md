@@ -29,19 +29,19 @@ Symlink installs track this checkout live (restart the session after pulling); `
   /plugin install review-deck@cc-review-plugin
   ```
 
-Verify with `claude plugin details review-deck@skills-dir` (script installs) or `claude --debug` / `/plugin`: you should see the `/deck-review`, `/deck-respond` and `/deck-hub` commands, the `code-reviewer` agent, and the `review-deck` skill.
+Verify with `claude plugin details review-deck@skills-dir` (script installs) or `claude --debug` / `/plugin`: you should see the `/review`, `/respond` and `/hub` commands, the `code-reviewer` agent, and the `review-deck` skill.
 
 Requirements: `git`, `python3` (stdlib only — no pip installs), any modern browser.
 
 ## Usage
 
-### `/deck-review [ref-or-range]`
+### `/review [ref-or-range]`
 
 Generates the review page.
 
-- `/deck-review` — reviews **staged changes** if any, otherwise working tree vs `HEAD`.
-- `/deck-review main...HEAD` — reviews a range.
-- `/deck-review abc1234` — reviews a single commit.
+- `/review` — reviews **staged changes** if any, otherwise working tree vs `HEAD`.
+- `/review main...HEAD` — reviews a range.
+- `/review abc1234` — reviews a single commit.
 
 Claude assembles a context brief (your plan, decisions, stated intent), writes an **overview** — a reader's introduction at the top of the page: what the change is, why it exists, where the entry point is and how control flows from there, plus **mermaid diagrams** when the change has a flow worth drawing (a request path through a web app, a new pipeline; a config tweak gets no diagram). It writes explanatory `info` notes itself when it authored the changes (the author explaining intent), delegates critique (`warning`/`suggestion`) to the fresh-eyes `code-reviewer` subagent, merges everything into `notes.ai.json`, and runs the deterministic generator to produce `review.html`. It then opens the page in your browser.
 
@@ -56,7 +56,7 @@ Because AI-assisted work produces *a lot* of diff, Claude also budgets your atte
 ### In the browser
 
 - Click any diff line (or press `c` on the focused line) to comment. Comments support edit, delete, and resolve.
-- Every AI note has a **Dismiss** button — mark a note you don't want the AI to act on. Dismissed notes are dimmed, ride along in the `comments.user.md` export, and both `/deck-respond` and the next round's reviewer are instructed to leave them (and equivalent findings) alone. **Restore** un-dismisses.
+- Every AI note has a **Dismiss** button — mark a note you don't want the AI to act on. Dismissed notes are dimmed, ride along in the `comments.user.md` export, and both `/respond` and the next round's reviewer are instructed to leave them (and equivalent findings) alone. **Restore** un-dismisses.
 - **Saving comments**:
   1. **Save to review folder / Connect review folder** (Chromium-only: Chrome, Edge, Brave, …) — pick the review round directory once; `comments.user.md` is written straight into it, and live from then on. The folder handle is remembered (IndexedDB), so on the next visit the page reconnects by itself — tick "Allow on every visit" in Chrome's permission prompt and it's fully automatic; otherwise it's one "Reconnect" click.
   2. In browsers without the File System Access API (Firefox, Safari) the button falls back to **Export comments** — a plain download to move into the review directory yourself (a browser can't write to an arbitrary path without a user-granted handle). There is also **Copy as Markdown**.
@@ -64,27 +64,44 @@ Because AI-assisted work produces *a lot* of diff, Claude also budgets your atte
 - Changed lines get **word-level highlighting** — the exact edited span inside a modified line pair lights up, so long lines read at a glance.
 - A **minimap** on the right edge shows change density plus note/comment markers across the whole diff — click or drag to jump.
 - The side panel has two tabs: the **guided tour** and a **findings digest** — every AI note sorted by severity with jump links and "handled" checkboxes.
-- Comments carry a **type** (`fix` / `question` / `nit` / `discuss`, plus one-click canned snippets) so `/deck-respond` knows whether to patch, answer, or discuss. AI notes take **👍/👎** — downvotes teach the next round's reviewers what you consider noise.
+- Comments carry a **type** (`fix` / `question` / `nit` / `discuss`, plus one-click canned snippets) so `/respond` knows whether to patch, answer, or discuss. AI notes take **👍/👎** — downvotes teach the next round's reviewers what you consider noise.
 - The header shows an **estimated reading time left**, weighted by triage (mechanical files are nearly free) and ticking down as you mark files viewed.
 - Marking a file **Viewed** collapses it; `]` marks the current file viewed and jumps to the next unviewed one (`Shift+J`/`K` hop between files); the page also remembers your scroll position, so you resume exactly where you left off.
 - Themes: light / dark / solarized / high-contrast / Dracula / Nord / Gruvbox (dark & light) / Monokai / One Dark / Catppuccin (Mocha & Latte) / Tokyo Night / Rosé Pine / Everforest / Ayu Light / custom (color pickers), persisted. Switch freely — your eyes will thank you.
 - Keyboard: `j`/`k` hunks, `n`/`p` AI notes, `c` comment, `v` mark file viewed, `?` help.
 - The sticky header tracks files viewed, AI note count, and unresolved comments.
-- **Arcade mode** (the 🎮 button): earn XP for reviewing — viewing files, commenting, resolving, dismissing — with confetti, levels, an ALL FILES VIEWED celebration, **achievements** (Nitpicker, Speedrunner, Night shift…), and a **rubber duck** 🦆 that waddles along the diff as you review and quacks when you comment. XP and achievements accumulate across all your reviews and show up in the hub's trophy case. Entirely optional, entirely silly, off by default.
+- **Arcade mode** (the 🎮 button): earn XP for reviewing — viewing files, commenting, resolving, dismissing — with confetti, levels, an ALL FILES VIEWED celebration, and a **rubber duck** 🦆 that waddles along the diff as you review and quacks when you comment. XP accumulates across all your reviews. Entirely optional, entirely silly, off by default.
 
-### `/deck-hub`
+### `/hub`
 
-One page with **every review across all your projects**. Each `/deck-review` run registers its page in a global registry (`~/.local/share/review-deck/registry.json`, or `$XDG_DATA_HOME/review-deck/`); `/deck-hub` regenerates a self-contained `index.html` from it — reviews grouped by repo, with branch/round, note counts, unresolved-comment badges, last activity, and a direct link to each page — and opens it. No server, no daemon: a static page rebuilt on demand. Entries whose `review.html` was deleted are pruned automatically on every rebuild.
+One page with **every review across all your projects**. Each `/review` run registers its page in a global registry (`~/.local/share/review-deck/registry.json`, or `$XDG_DATA_HOME/review-deck/`); `/hub` regenerates a self-contained `index.html` from it — reviews grouped by repo, with branch/round, note counts, unresolved-comment badges, last activity, and a direct link to each page — and opens it. No server, no daemon: a static page rebuilt on demand. Entries whose `review.html` was deleted are pruned automatically on every rebuild.
 
-The hub opens with **Review Wrapped** — your last 7 days at a glance (reviews, projects, unresolved comments, hottest repo) with a "Copy for Slack" button — and, once you've played in arcade mode, a **trophy case** of your achievements and XP level (all `file://` pages share localStorage, so the hub reads your stats with zero backend).
+The hub opens with **Review Wrapped** — your last 7 days at a glance (reviews, projects, unresolved comments, hottest repo) with a "Copy for Slack" button; arcade players also see their XP level there (all `file://` pages share localStorage, so the hub reads your stats with zero backend).
+
+**GitLab integration** (optional, works with self-hosted): the hub can list every open MR where you are assignee or reviewer — title, project reference, comment count, draft/conflict badges, your role, last update — fetched at rebuild time straight from the GitLab API (stdlib urllib, no dependencies). Configure once in `~/.local/share/review-deck/config.json`:
+
+```json
+{"gitlab": {"url": "https://gitlab.your.company", "token_env": "GITLAB_TOKEN"}}
+```
+
+(`token` inline also works; `token_env` keeps the secret out of the file. `"insecure": true` skips TLS verification for self-signed setups.) No config → no section, no network.
+
+### `/chat` — talk to the session that wrote it (POC)
+
+Every review registered since v0.6 captures the **id of the Claude Code session that generated it**. `/chat` starts a small local server (127.0.0.1, stdlib only) with a browser chat UI: pick any review — from any repository — and talk directly to its authoring session, with its full context ("why did you pick this pattern?", "what did we decide about X?"). Under the hood each chat is a long-lived `claude -p --resume <session-id> --input-format stream-json --output-format stream-json` subprocess (the same mechanism the Agent SDK uses), spawned in the session's original cwd and streamed to the browser via SSE.
+
+- Works on Ubuntu and WSL alike (WSL2 forwards localhost, so the Windows browser reaches the Linux server directly).
+- While the server runs, the hub shows a **Chat** button next to every review that has a captured session.
+- POC safety: resumed sessions get read-only tools (`Read`, `Grep`, `Glob`) — they can inspect the repo and discuss, not edit.
+- This is the one opt-in component that is a server; everything else in review-deck stays static files. Stop it with `pkill -f deck_chat.py`.
 
 ### Plugging in your own tooling
 
-review-deck is a **sink for any pipeline that can write JSON**: your project's review workflows, agents, git hooks, CI jobs, or linter wrappers drop fragments (notes anchored by `file` + `line`, checklist items, triage, tour, overview) into `.code-review/<branch>/contrib/`, and the next `/deck-review` merges them into the page with a per-tool source badge. Project defaults (diff base, pathspec excludes, custom reviewer agents) live in a committed `.claude/review-deck.json`. The full contract — fragment schema, merge semantics, a validator (`--validate-contrib`), and adapter examples — is one page: [INTEGRATIONS.md](INTEGRATIONS.md).
+review-deck is a **sink for any pipeline that can write JSON**: your project's review workflows, agents, git hooks, CI jobs, or linter wrappers drop fragments (notes anchored by `file` + `line`, checklist items, triage, tour, overview) into `.code-review/<branch>/contrib/`, and the next `/review` merges them into the page with a per-tool source badge. Project defaults (diff base, pathspec excludes, custom reviewer agents) live in a committed `.claude/review-deck.json`. The full contract — fragment schema, merge semantics, a validator (`--validate-contrib`), and adapter examples — is one page: [INTEGRATIONS.md](INTEGRATIONS.md).
 
-### `/deck-respond`
+### `/respond`
 
-Reads the newest `comments.user.md` for the current branch, replies to each unresolved comment in-chat, proposes/applies code changes where a comment asks for one (with your confirmation), and offers to run `/deck-review` again. The next round's page carries over still-unresolved comments flagged **"from previous round"**.
+Reads the newest `comments.user.md` for the current branch, replies to each unresolved comment in-chat, proposes/applies code changes where a comment asks for one (with your confirmation), and offers to run `/review` again. The next round's page carries over still-unresolved comments flagged **"from previous round"**.
 
 ## The review directory
 
@@ -112,7 +129,7 @@ Everything lives under `.code-review/` at the repo root (auto-added to `.gitigno
 - **Mermaid is the one vendored dependency**: diagrams need a real renderer, so `assets/mermaid.min.js` (pinned, from jsDelivr) is inlined into pages that contain diagrams — keeping the zero-network-requests guarantee. Everything else stays hand-rolled.
 - **The hub is a static page, not a service**: `build_hub.py` keeps `registry.json` + `index.html` under `$XDG_DATA_HOME/review-deck/` and rebuilds on demand; dead entries self-prune. Registration is local metadata only (paths and counts — no code leaves your machine).
 - **Syntax highlighting** is a ~120-line per-line tokenizer (keywords / strings / comments / numbers) with language families (python, C-like, ruby, shell, sql, css, json, yaml, html) picked by file extension. Multi-line block comments don't carry highlight state across lines — a deliberate simplicity trade-off.
-- The raw diff is kept as `changes.patch` in each round dir (not in the spec's file list, but essential for reproducing the page and for `/deck-respond` context).
+- The raw diff is kept as `changes.patch` in each round dir (not in the spec's file list, but essential for reproducing the page and for `/respond` context).
 - A body line consisting solely of `---` inside a comment is escaped on export (`\---`) so it can't terminate the section early.
 
 ## Limitations

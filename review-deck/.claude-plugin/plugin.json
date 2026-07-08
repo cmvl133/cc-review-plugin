@@ -1,6 +1,6 @@
 {
   "name": "review-deck",
-  "version": "0.5.0",
+  "version": "0.7.0",
   "description": "Turn any git diff into an interactive, self-contained HTML code review page with an AI-written overview, mermaid flow diagrams, explanatory notes and user commenting — plus a cross-project hub listing every review, backed by a persistent .code-review/ directory for a two-way review loop.",
   "author": {
     "name": "Kamil Pińkowski",
