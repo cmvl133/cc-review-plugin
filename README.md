@@ -70,7 +70,7 @@ Because AI-assisted work produces *a lot* of diff, Claude also budgets your atte
 
 One page with **every review across all your projects**. Each `/review` run registers its page in a global registry (`~/.local/share/review-deck/registry.json`, or `$XDG_DATA_HOME/review-deck/`); `/hub` regenerates a self-contained `index.html` from it — reviews grouped by repo, with branch/round, note counts, unresolved-comment badges, last activity, and a direct link to each page — and opens it. No server, no daemon: a static page rebuilt on demand. Entries whose `review.html` was deleted are pruned automatically on every rebuild.
 
-The hub opens with **Review Wrapped** — your last 7 days at a glance (reviews, projects, unresolved comments, hottest repo) with a "Copy for Slack" button; arcade players also see their XP level there (all `file://` pages share localStorage, so the hub reads your stats with zero backend).
+The hub opens with **Review Wrapped** — your last 7 days at a glance (reviews, projects, unresolved comments, hottest repo); arcade players also see their XP level there (all `file://` pages share localStorage, so the hub reads your stats with zero backend).
 
 **GitLab integration** (optional, works with self-hosted): the hub can list every open MR where you are assignee or reviewer — title, project reference, comment count, draft/conflict badges, your role, last update — fetched at rebuild time straight from the GitLab API (stdlib urllib, no dependencies). Configure once in `~/.local/share/review-deck/config.json`:
 

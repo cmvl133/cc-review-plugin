@@ -205,11 +205,7 @@ a:hover{text-decoration:underline}
   background:var(--warn-bg);color:var(--warn-fg);white-space:nowrap}
 .empty{color:var(--muted);font-style:italic;padding:24px 0;text-align:center}
 #wrapped{border:1px solid var(--border);border-radius:8px;margin-bottom:16px;padding:12px 16px;background:var(--panel)}
-#wrapped .w-head{display:flex;align-items:center;gap:10px}
-#wrapped h2{margin:0;font-size:15px;flex:1}
-#wrapped button{font:inherit;font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--border);
-  background:var(--bg);color:var(--fg);cursor:pointer}
-#wrapped button:hover{border-color:var(--accent)}
+#wrapped h2{margin:0;font-size:15px}
 .w-grid{display:flex;gap:22px;margin:10px 0 4px;flex-wrap:wrap}
 .w-stat{font-size:12px;color:var(--muted)}
 .w-stat b{display:block;font-size:22px;color:var(--fg)}
@@ -235,8 +231,7 @@ a.chat-btn:hover{text-decoration:none;opacity:.85}
 </header>
 <main>
 <section id="wrapped">
-  <div class="w-head"><h2>Review Wrapped &mdash; last 7 days</h2>
-  <button id="btn-copy-wrap" title="Copy a summary as markdown">Copy for Slack</button></div>
+  <h2>Review Wrapped &mdash; last 7 days</h2>
   <div class="w-grid">
     <div class="w-stat"><b>@@WEEK_REVIEWS@@</b>reviews</div>
     <div class="w-stat"><b>@@WEEK_REPOS@@</b>projects</div>
@@ -305,19 +300,6 @@ Array.prototype.forEach.call(document.querySelectorAll('.rm-btn'), function(b){
       });
   });
 });
-document.getElementById('btn-copy-wrap').addEventListener('click', function(){
-  var md = '**Review Wrapped — last 7 days**\n' +
-    '- reviews: @@WEEK_REVIEWS@@ across @@WEEK_REPOS@@ project(s)\n' +
-    '- unresolved comments: @@UNRESOLVED@@\n' +
-    '@@HOT_MD@@' +
-    (xp > 0 ? '- XP: ' + xp + ' (level ' + (1 + Math.floor(xp / 100)) + ')\n' : '');
-  (navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(md) : Promise.reject())
-    .then(function(){
-      var b = document.getElementById('btn-copy-wrap');
-      b.textContent = 'Copied!';
-      setTimeout(function(){ b.textContent = 'Copy for Slack'; }, 1500);
-    }, function(){});
-});
 })();
 </script>
 </body>
@@ -381,7 +363,7 @@ def build_index(d, reg):
     week = [e for e in reg["reviews"] if now_ts - entry_mtime(e) < 7 * 86400]
     week_repos = {e.get("repo_root") for e in week}
     unresolved = sum(count_unresolved(e["html"]) or 0 for e in reg["reviews"])
-    hot_line = hot_md = ""
+    hot_line = ""
     if week:
         per_repo = {}
         for e in week:
@@ -390,7 +372,6 @@ def build_index(d, reg):
         hot_name = Path(hot_root).name or hot_root
         hot_line = "Hottest project: <b>%s</b> (%d review%s this week)" % (
             esc(hot_name), hot_n, "s" if hot_n != 1 else "")
-        hot_md = "- hottest project: %s (%d)\\n" % (hot_name.replace("'", ""), hot_n)
 
     out = (HUB_TEMPLATE
            .replace("@@COUNT@@", str(len(reg["reviews"])))
@@ -400,7 +381,6 @@ def build_index(d, reg):
            .replace("@@WEEK_REPOS@@", str(len(week_repos)))
            .replace("@@UNRESOLVED@@", str(unresolved))
            .replace("@@HOT_LINE@@", hot_line)
-           .replace("@@HOT_MD@@", hot_md)
            .replace("@@MRS@@", mrs_html)
            .replace("@@BODY@@", body))
     index = d / "index.html"
