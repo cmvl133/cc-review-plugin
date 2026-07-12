@@ -33,12 +33,14 @@ You are the conductor: you may hold context the subagent cannot see.
 
 **3a. Assemble a context brief** (under ~500 words) containing, when available: the implementation plan (from this conversation, a plan file, or CLAUDE.md), key decisions and their rationale, the methodology in use, and anything the user said about intent. If nothing is available (foreign/historical diff), assemble what you can from the repo (README, recent commit messages) and say so in the brief.
 
-**3b. Overview, triage, tour, checklist** — write these `notes.ai.json` objects (schemas in SKILL.md), scaling each to the diff — omit what a small diff doesn't need:
+**3b. Overview, triage, tour, checklist** — semantics and schemas are in SKILL.md; scale each to the diff and omit what a small diff doesn't need:
 
-- `overview`: a reader's introduction. `body` (markdown): what this change is, why it exists, and where to start reading — name the entry point and how control flows from it through the changed pieces. Format it as real markdown: blank lines between paragraphs, every list item (`- ` or `1. `) on its own line, `###` for sub-headings — never run enumerations together inside one paragraph. Add `diagrams` (mermaid source, e.g. `flowchart` or `sequenceDiagram`) **only when the change has a flow worth drawing** — a request path through a web app, a new pipeline, interacting components. A config tweak or single-function change needs no diagram.
-- `triage`: classify **every** file — `risky` (security, money, concurrency, data migrations), `core` (real logic), `skim`, or `mechanical` (renames, lockfiles, generated code, boilerplate) — each with a short `reason`. Be honest about `mechanical`: its whole point is letting the reviewer safely skip it. Set `untested: true` on files whose changed logic no test in the diff exercises.
-- `tour`: for diffs where reading order aids comprehension (≥3 interrelated files), 3–10 anchored steps telling the story of the change: entry point → core logic → periphery. Skip for trivial diffs.
-- `checklist`: when you have a plan/intent (from the brief), map each plan item to `done`/`partial`/`missing` with an anchor where implemented. Its job is to catch what the change *silently didn't do* — never omit an item because it's missing from the diff; that's exactly the item to include.
+- `overview`: what the change is, why it exists, entry point and control flow. Real markdown (blank lines between paragraphs, list items on their own lines). `diagrams` only when there is a flow worth drawing — a config tweak needs none.
+- `triage`: classify every file, each with a short `reason`; use glob entries (`"generated/*"`, `"*"` catch-all) instead of enumerating many similar files. `untested: true` where changed logic has no test in the diff.
+- `tour`: 3–10 anchored steps when reading order aids comprehension (≥3 interrelated files); skip for trivial diffs.
+- `checklist`: when a plan/intent exists, map each item to `done`/`partial`/`missing` — never omit an item because it's missing from the diff; that's exactly the item to include.
+
+**Large diffs** (roughly >15 files or >400 changed lines): do not read the whole patch into context. Triage from `git diff --numstat` plus the hunk headers (`grep -n '^diff --git\|^@@' changes.patch`), then read only the hunks of files you will actually annotate (`risky`/`core`). `skim`/`mechanical` files need no full-text read.
 
 **3c. Explanatory notes (`info`)** — if the changes were authored in this session or you have a plan/context: write these yourself, as the author explaining intent. One note per meaningful piece of the change: what it does and *why it exists*. Do not delegate these — a context-free agent would only guess at intent. If you have no context at all, skip this step (the subagent covers it in 3d).
 
@@ -47,9 +49,9 @@ You are the conductor: you may hold context the subagent cannot see.
 - the bundled `code-reviewer` agent (unless config sets `bundledReviewer: false`);
 - every agent named in config `reviewers` (project-defined specialists).
 
-Pass each: the path to `changes.patch`, the full context brief, the anchoring rules reminder, and — if any — the dismissed findings list with the instruction not to re-raise them or equivalent notes. The bundled agent returns `{"notes": [...]}`; project agents may return findings in their own shape — normalize them to the notes schema yourself (map their severities onto `warning`/`suggestion`/`info`; anchor by `file` + `line` when that's all they give). If you had no context for 3c, tell the agents they are in no-context mode and the bundled one must also produce `info` explanatory notes.
+Pass each: a draft output path in the review dir (`<dir>/notes.<agent-name>.json`, e.g. `notes.code-reviewer.json`), the path to `changes.patch`, the full context brief, and — if any — the dismissed findings list with the instruction not to re-raise them or equivalent notes. Each agent **writes its draft file itself** (`{"notes": [...]}` in the SKILL.md schema) and replies with a one-line count only — never paste note JSON back through chat. A project agent that can't follow the schema may return findings its own way; normalize only those into your conductor file (map severities onto `warning`/`suggestion`/`info`; anchor by `file` + `line` when that's all they give). If you had no context for 3c, tell the agents they are in no-context mode and the bundled one must also produce `info` explanatory notes.
 
-**3e. Merge** everything into one `notes.ai.json` in the review dir, following the schema in SKILL.md exactly: `version: 1`, `generated_at` (current UTC ISO-8601), `base`/`head` (the refs you diffed, e.g. `HEAD` and `worktree`, or the range endpoints), the `overview`/`triage`/`tour`/`checklist` objects from 3b, and `notes` renumbered sequentially as `n-001`, `n-002`, … in file order. Every note must use hunk-index + exact-line-content anchoring (1-based hunk index, line content copied verbatim from the patch, without the leading `+`/`-`/space).
+**3e. Write your conductor document** to `<dir>/notes.conductor.json`: `version: 1`, `generated_at` (current UTC ISO-8601), `base`/`head` (the refs you diffed), the `overview`/`triage`/`tour`/`checklist` objects from 3b, and your own `info` notes from 3c (any ids). **Do not copy reviewer notes into it** — step 5 hands all draft files to the build script, which merges them and renumbers every id (`n-001`… in patch order). Anchors: 1-based `hunk_index` + `anchor_line_content`, a short unique fragment of the line (no `+`/`-`/space marker) — don't copy long lines whole.
 
 ## 4. Find previous rounds
 
@@ -68,7 +70,9 @@ Then run (omit `--session-id` if the capture produced nothing):
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/skills/review-deck/scripts/build_review.py" \
   --patch <dir>/changes.patch \
-  --notes <dir>/notes.ai.json \
+  --notes <dir>/notes.conductor.json \
+  --notes <dir>/notes.<agent>.json \        # repeat for every reviewer draft written in 3d
+  --merged-notes-out <dir>/notes.ai.json \
   --out <dir>/review.html \
   --notes-md <dir>/notes.ai.md \
   --title "<branch-slug>: <base>..<head>" \
@@ -80,7 +84,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/skills/review-deck/scripts/build_review.py" \
 
 `--contrib-dir` merges fragments dropped by external tooling (workflows, hooks, CI — see `INTEGRATIONS.md`); a missing directory is fine. Contributed notes appear with a source badge — mention their count and sources in the final report.
 
-The script prints a JSON summary (files, hunks, anchored/unanchored notes, overview/diagram counts, gitignore action). If any notes came out `notes_unanchored`, re-check their `anchor_line_content` against the patch and fix obvious mistakes (wrong hunk index, paraphrased line), then re-run. One retry is enough — a genuinely unanchorable note is rendered at the top of its file section, never dropped.
+The script prints a JSON summary (files, hunks, anchored/unanchored notes, overview/diagram counts, gitignore action). If any notes came out `notes_unanchored`, re-check their `anchor_line_content` against the patch (wrong hunk index, paraphrased line — a short fragment copied from the actual patch line fixes it), edit the offending draft file, then re-run. One retry is enough — a genuinely unanchorable note is rendered at the top of its file section, never dropped.
 
 ## 6. Register in the hub
 

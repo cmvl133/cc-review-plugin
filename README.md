@@ -37,7 +37,7 @@ Generates the review page.
 - `/review main...HEAD` — reviews a range.
 - `/review abc1234` — reviews a single commit.
 
-Claude assembles a context brief (your plan, decisions, stated intent), writes an **overview** — a reader's introduction at the top of the page: what the change is, why it exists, where the entry point is and how control flows from there, plus **mermaid diagrams** when the change has a flow worth drawing (a request path through a web app, a new pipeline; a config tweak gets no diagram). It writes explanatory `info` notes itself when it authored the changes (the author explaining intent), delegates critique (`warning`/`suggestion`) to the fresh-eyes `code-reviewer` subagent, merges everything into `notes.ai.json`, and runs the deterministic generator to produce `review.html`. It then opens the page in your browser.
+Claude assembles a context brief (your plan, decisions, stated intent), writes an **overview** — a reader's introduction at the top of the page: what the change is, why it exists, where the entry point is and how control flows from there, plus **mermaid diagrams** when the change has a flow worth drawing (a request path through a web app, a new pipeline; a config tweak gets no diagram). It writes explanatory `info` notes itself when it authored the changes (the author explaining intent) and delegates critique (`warning`/`suggestion`) to the fresh-eyes `code-reviewer` subagent, which writes its findings straight to a draft file — no note JSON round-trips through the conversation. The deterministic generator then merges the drafts into `notes.ai.json` (renumbering ids) and produces `review.html`, which opens in your browser.
 
 Diagrams render fully offline: a vendored `mermaid.min.js` is inlined into the page, and only when diagrams are present (~2.6 MB extra; diagram-free pages stay small). Diagrams follow the light/dark theme switch.
 
@@ -107,7 +107,8 @@ Everything lives under `.code-review/` at the repo root (auto-added to `.gitigno
     └── <round>/                 # short commit hash, or "worktree" for uncommitted diffs
         ├── changes.patch        # the exact diff that was reviewed
         ├── review.html          # the page (self-contained, zero network requests)
-        ├── notes.ai.json        # AI notes — machine-readable source of truth
+        ├── notes.*.json         # working drafts (conductor + one per reviewer agent)
+        ├── notes.ai.json        # merged AI notes — machine-readable source of truth
         ├── notes.ai.md          # the same notes, human-readable
         └── comments.user.md     # your comments, exported from the page
 ```

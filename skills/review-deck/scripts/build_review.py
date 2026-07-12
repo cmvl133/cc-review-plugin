@@ -7,6 +7,8 @@ The output HTML is byte-for-byte reproducible for the same inputs
 
 CLI:
   build_review.py --patch changes.patch --notes notes.ai.json --out review.html
+                  [--notes reviewer-draft.json ...]   # repeatable: drafts merged in
+                  [--merged-notes-out notes.ai.json]  # write merged+renumbered doc
                   [--prev-comments comments.user.md ...]
                   [--notes-md notes.ai.md] [--title TITLE] [--review-id ID]
                   [--ensure-gitignore REPO_ROOT]
@@ -18,6 +20,7 @@ fully offline.
 """
 
 import argparse
+import fnmatch
 import hashlib
 import html
 import json
@@ -863,11 +866,39 @@ def render_file_section(fd, fidx, anchored, unanchored_notes, triage=None, row_i
     return "".join(parts)
 
 
+def triage_lookup(triage_entries, files):
+    """Resolve triage per diff file. An entry's "file" may be an fnmatch glob
+    ("generated/*", "*" as catch-all default); exact entries win, then the
+    first matching glob in document order."""
+    entries = [t for t in triage_entries if isinstance(t, dict) and t.get("file")]
+    exact = {t["file"]: t for t in entries}
+    globs = [t for t in entries if any(ch in t["file"] for ch in "*?[")]
+    def resolve(path):
+        hit = exact.get(path)
+        if hit is not None:
+            return hit
+        for t in globs:
+            if fnmatch.fnmatch(path, t["file"]):
+                return t
+        return None
+    return {fd.path: resolve(fd.path) for fd in files}
+
+
+def renumber_notes(notes_doc, files):
+    """Reassign note ids sequentially (n-001, n-002, …) in patch file order,
+    then hunk order. Stable: same-position notes keep their input order."""
+    order = {fd.path: i for i, fd in enumerate(files)}
+    notes = notes_doc.get("notes", [])
+    notes.sort(key=lambda n: (order.get(n.get("file"), len(order)),
+                              n.get("hunk_index") if isinstance(n.get("hunk_index"), int) else 0))
+    for i, n in enumerate(notes):
+        n["id"] = "n-%03d" % (i + 1)
+
+
 def build_html(files, notes_doc, prev_comments, title, review_id, template,
                session_id="", repo_root=""):
     notes = list(notes_doc.get("notes", []))
-    triage_map = {t.get("file"): t for t in notes_doc.get("triage", [])
-                  if isinstance(t, dict)}
+    triage_map = triage_lookup(notes_doc.get("triage", []), files)
     files = sorted(files, key=lambda fd: ATTENTION_ORDER.get(
         (triage_map.get(fd.path) or {}).get("attention"), 2))
     by_file = {}
@@ -2666,7 +2697,13 @@ saveStore();
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Render a git diff + AI notes into a single-file HTML review page.")
     ap.add_argument("--patch", help="path to the raw unified diff")
-    ap.add_argument("--notes", help="path to notes.ai.json")
+    ap.add_argument("--notes", action="append", default=[],
+                    help="notes JSON file (repeatable: the first file is the primary "
+                         "document; later files are reviewer drafts whose \"notes\" "
+                         "arrays are merged in and all ids renumbered)")
+    ap.add_argument("--merged-notes-out", metavar="FILE",
+                    help="write the merged, renumbered notes document here "
+                         "(the notes.ai.json source of truth)")
     ap.add_argument("--out", help="path for review.html")
     ap.add_argument("--prev-comments", action="append", default=[],
                     help="comments.user.md from a previous round (repeatable)")
@@ -2708,12 +2745,27 @@ def main(argv=None):
 
     notes_doc = {"version": 1, "notes": []}
     if args.notes:
-        notes_doc = json.loads(Path(args.notes).read_text(encoding="utf-8"))
+        notes_doc = json.loads(Path(args.notes[0]).read_text(encoding="utf-8"))
+        notes_doc.setdefault("notes", [])
+        for p in args.notes[1:]:
+            try:
+                draft = json.loads(Path(p).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as e:
+                print("warning: skipping notes draft %s: %s" % (p, e), file=sys.stderr)
+                continue
+            notes_doc["notes"].extend(n for n in draft.get("notes", [])
+                                      if isinstance(n, dict) and n.get("file"))
+        if len(args.notes) > 1:
+            renumber_notes(notes_doc, files)
         bad = [n.get("id", "?") for n in notes_doc.get("notes", [])
                if n.get("severity") not in SEVERITIES]
         if bad:
             print("warning: unknown severity on notes %s (treated as info)" % ", ".join(bad),
                   file=sys.stderr)
+    if args.merged_notes_out:
+        Path(args.merged_notes_out).write_text(
+            json.dumps(notes_doc, indent=2, ensure_ascii=False, sort_keys=False) + "\n",
+            encoding="utf-8")
 
     contrib_paths = list(args.contrib)
     if args.contrib_dir and Path(args.contrib_dir).is_dir():

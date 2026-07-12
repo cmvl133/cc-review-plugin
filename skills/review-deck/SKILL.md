@@ -1,6 +1,6 @@
 ---
 name: review-deck
-description: Conventions for generating interactive HTML code reviews from git diffs — the .code-review/ directory layout, the notes.ai.json schema, note anchoring rules, and the build_review.py CLI. Use when running /review or /respond, or when working with .code-review/ directories, notes.ai.json, or comments.user.md files.
+description: Conventions for review-deck HTML code reviews — .code-review/ layout, notes JSON schema, anchoring rules, build_review.py CLI. Use for /review, /respond, or any .code-review/ file.
 ---
 
 # review-deck conventions
@@ -20,7 +20,10 @@ Everything lives under `.code-review/` at the repo root (always gitignored — t
     └── <round>/                   # short head commit hash, or "worktree" for uncommitted diffs
         ├── changes.patch          # the raw unified diff that was reviewed
         ├── review.html            # generated page — script output only
-        ├── notes.ai.json          # AI notes, machine-readable (source of truth)
+        ├── notes.conductor.json   # conductor draft: overview/triage/tour/checklist + info notes
+        ├── notes.<agent>.json     # one draft per reviewer agent (critique notes)
+        ├── notes.ai.json          # merged notes, machine-readable source of truth
+        │                          #   (script output, via --merged-notes-out)
         ├── notes.ai.md            # same notes, human-readable (script output, via --notes-md)
         └── comments.user.md       # user comments exported from the HTML page
 ```
@@ -68,9 +71,9 @@ Everything lives under `.code-review/` at the repo root (always gitignored — t
 
 - `severity` ∈ `info` (author explanation) | `suggestion` (improvement) | `warning` (risk).
 - `file` is the post-change path as it appears in the diff (old path for deleted files).
-- `id`s are sequential `n-001`, `n-002`, … in the merged file (subagent drafts use `r-###`; the conductor renumbers).
+- `id`s: drafts may use any ids (`r-###` by convention). When the build script merges multiple `--notes` files it renumbers everything to sequential `n-001`, `n-002`, … in patch order — nobody hand-renumbers.
 - `overview` is optional and renders at the top of the page: `body` is markdown; each diagram's `mermaid` is raw mermaid source (rendered client-side by the vendored `assets/mermaid.min.js`, which is inlined into the page only when diagrams are present — pages without diagrams stay small). Include diagrams only when the change has a flow worth drawing; scale the overview to the diff.
-- `triage` (optional) classifies files so the reviewer can budget attention. `attention` ∈ `risky` (security/money/concurrency/migrations — read hardest) | `core` (real logic — read carefully; also the default for unlisted files) | `skim` (glance is enough) | `mechanical` (renames, generated code, boilerplate — rendered collapsed). `untested: true` flags files whose changed logic no test in this diff exercises. The page sorts files risky → core → skim → mechanical and offers filter buttons; every classified file should have a short `reason` (shown as badge tooltip).
+- `triage` (optional) classifies files so the reviewer can budget attention. `attention` ∈ `risky` (security/money/concurrency/migrations — read hardest) | `core` (real logic — read carefully; also the default for unlisted files) | `skim` (glance is enough) | `mechanical` (renames, generated code, boilerplate — rendered collapsed). `untested: true` flags files whose changed logic no test in this diff exercises. The page sorts files risky → core → skim → mechanical and offers filter buttons; every classified file should have a short `reason` (shown as badge tooltip). `file` may be an fnmatch glob — `"generated/*"`, or `"*"` as a catch-all default; exact entries win, then the first matching glob. Use one glob entry instead of enumerating dozens of mechanical files.
 - `tour` (optional) is an ordered reading path through the diff — the story of the change, not file order. Anchored like notes (`file` + `hunk_index` + `anchor_line_content`); renders as a sticky sidebar with prev/next. Include it when reading order genuinely aids comprehension (entry point → core → periphery); skip for small diffs.
 - `checklist` (optional) maps plan items to their implementation: `status` ∈ `done` | `partial` | `missing`; anchored items get a "view" link. Include when a plan/intent exists — its job is catching what the change *silently didn't do*, so `missing`/`partial` items matter most. Anchors for `tour`/`checklist` fall back to the file header when unresolvable.
 
@@ -79,7 +82,7 @@ Everything lives under `.code-review/` at the repo root (always gitignored — t
 Notes anchor to **hunk index + exact line content** — never absolute line numbers:
 
 - `hunk_index` is **1-based** within that file's hunks in the patch.
-- `anchor_line_content` is the line's content copied verbatim from the patch **without** the leading `+`/`-`/space marker.
+- `anchor_line_content` is content from the line, **without** the leading `+`/`-`/space marker. A short unique fragment of the line is enough — the resolver accepts any substring that is unambiguous within the hunk — so prefer the distinctive span (a function name, the changed expression) over copying a long line whole.
 - Resolution order (implemented in the script): exact match in the given hunk → whitespace-stripped match → unique whitespace-stripped substring match → same three passes across all of the file's hunks (accepted only if unambiguous).
 - **Exception for external contributions:** an entry may instead carry `"line": N` — a plain new-file line number (old-file numbers resolve for deleted lines). This exists for external tools (see `INTEGRATIONS.md`), which only know `file:line`. Content anchoring wins when both are present; model-authored notes must keep using content anchors.
 - Unresolvable anchors are **never dropped**: the note renders at the top of its file section with an "unanchored" badge. A note whose `file` isn't in the diff renders in a "Notes on files not in this diff" section.
@@ -137,7 +140,12 @@ External tooling plugs in by dropping JSON fragments (any subset of `notes` / `t
 python3 scripts/build_review.py \
   --patch changes.patch          # required: raw unified diff
   --out review.html              # required: output page
-  [--notes notes.ai.json]        # AI notes to render inline
+  [--notes FILE]                 # notes JSON; repeatable — first file is the primary
+                                 #   document (overview/triage/tour/checklist + notes),
+                                 #   later files are reviewer drafts whose notes are
+                                 #   merged in; ids renumbered n-001… in patch order
+  [--merged-notes-out FILE]      # write the merged document (the notes.ai.json
+                                 #   source of truth) — use whenever merging drafts
   [--notes-md notes.ai.md]       # also emit the human-readable notes mirror
   [--prev-comments FILE]         # previous round's comments.user.md (repeatable);
                                  #   unresolved ones render flagged "from previous round"
