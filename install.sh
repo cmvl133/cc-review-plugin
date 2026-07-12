@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — install/update/uninstall the review-deck plugin without a marketplace.
+# install.sh — install/update/uninstall the review-deck plugin.
 #
 # Claude Code auto-loads any directory under a "skills dir" that contains
 # .claude-plugin/plugin.json as a full plugin (<name>@skills-dir):
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 PLUGIN=review-deck
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$PLUGIN"
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MODE=install
 SCOPE=global
@@ -97,22 +97,14 @@ if [ "$METHOD" = link ]; then
   remove_dest
   ln -s "$SRC" "$DEST"
   echo "installed (symlink): $DEST -> $SRC"
-  echo "updates: just 'git pull' in $(dirname "$SRC")"
+  echo "updates: just 'git pull' in $SRC"
 else
   remove_dest
   mkdir -p "$DEST"
   # copy plugin contents, skipping repo junk
-  (cd "$SRC" && tar cf - --exclude='__pycache__' --exclude='*.pyc' .) | (cd "$DEST" && tar xf -)
+  (cd "$SRC" && tar cf - --exclude='__pycache__' --exclude='*.pyc' --exclude='.git' --exclude='install.sh' .) | (cd "$DEST" && tar xf -)
   echo "installed (copy): $DEST"
   echo "updates: re-run this script after pulling changes"
-fi
-
-# warn about a duplicate marketplace-based install
-if command -v claude >/dev/null 2>&1 && claude plugin list 2>/dev/null | grep "$PLUGIN@" | grep -qv "@skills-dir"; then
-  echo
-  echo "note: '$PLUGIN' also appears to be installed via a marketplace — it would load twice."
-  echo "      remove the marketplace copy with:"
-  echo "        claude plugin uninstall $PLUGIN"
 fi
 
 echo "restart your Claude Code session, then verify with: claude plugin details $PLUGIN@skills-dir"

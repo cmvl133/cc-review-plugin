@@ -6,7 +6,7 @@ AI generates a lot of code; you read more code than ever. Reading raw diffs in a
 
 ## Installation
 
-### Recommended: the install script (no marketplace involved)
+### Recommended: the install script
 
 Claude Code auto-loads full plugins from `~/.claude/skills/` (global) and `<project>/.claude/skills/` (per project). The repo-root `install.sh` manages that for you:
 
@@ -17,17 +17,11 @@ Claude Code auto-loads full plugins from `~/.claude/skills/` (global) and `<proj
 ./install.sh uninstall [--local [DIR]]
 ```
 
-Symlink installs track this checkout live (restart the session after pulling); `--copy` is for when the checkout may move or you want a frozen version. The script is idempotent, refuses to overwrite anything at the target that isn't review-deck, and warns if a duplicate marketplace install would make the plugin load twice.
+Symlink installs track this checkout live (restart the session after pulling); `--copy` is for when the checkout may move or you want a frozen version. The script is idempotent and refuses to overwrite anything at the target that isn't review-deck.
 
 ### Alternatives
 
-- **One session only:** `claude --plugin-dir /path/to/cc-review-plugin/review-deck`
-- **Via a local marketplace** (this repository is one):
-
-  ```
-  /plugin marketplace add /path/to/cc-review-plugin
-  /plugin install review-deck@cc-review-plugin
-  ```
+- **One session only:** `claude --plugin-dir /path/to/cc-review-plugin`
 
 Verify with `claude plugin details review-deck@skills-dir` (script installs) or `claude --debug` / `/plugin`: you should see the `/review`, `/respond` and `/hub` commands, the `code-reviewer` agent, and the `review-deck` skill.
 
@@ -122,7 +116,7 @@ Everything lives under `.code-review/` at the repo root (auto-added to `.gitigno
 
 ## Design choices (where the spec left room)
 
-- **This repo doubles as the marketplace**: `.claude-plugin/marketplace.json` at the repo root points at `./review-deck`, whose own `.claude-plugin/` contains only `plugin.json`, per plugin conventions.
+- **The repo root is the plugin**: `.claude-plugin/plugin.json` sits at the top level next to `commands/`, `agents/` and `skills/`, so the checkout can be symlinked or `--plugin-dir`'d directly.
 - **AI notes are rendered into the HTML by the script** (server-side, visible without JS); **user comments are rendered client-side** from an embedded JSON blob merged with `localStorage` — the page is the comment editor, so it owns that state. Previous-round unresolved comments ride in via that blob, flagged and still editable/resolvable.
 - **Notes anchor to hunk index (1-based) + exact line content**, with whitespace-stripped and unique-substring fallbacks, then a cross-hunk search; failures render "unanchored" at the file top, never dropped.
 - **Determinism**: the script generates no timestamps or randomness; the default review id is a hash of the patch, so re-running on the same diff produces identical bytes and preserves your buffered comments.
