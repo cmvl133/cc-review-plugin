@@ -1,105 +1,121 @@
 # review-deck
 
-A Claude Code plugin that turns any git diff into an **interactive, self-contained HTML code review page** — with AI explanatory notes anchored to the lines they explain, inline user commenting, themes, and keyboard navigation. Comments flow back to Claude for the next iteration, closing a two-way review loop.
+A Claude Code plugin that turns any git diff into an **interactive, self-contained HTML code review page** — AI notes anchored to the lines they explain, inline commenting, a guided tour, and a two-way loop: your comments become Claude's next work queue.
 
-AI generates a lot of code; you read more code than ever. Reading raw diffs in a terminal is exhausting — this gives you a comfortable review UI where the AI explains *why* each part of the change exists, and your replies become Claude's next work queue.
+AI generates a lot of code; you read more code than ever. Reading raw diffs in a terminal is exhausting — review-deck gives you a real review UI where the AI explains *why* each part of the change exists.
 
-## Installation
+![A generated review page: overview, mermaid flow diagram, plan checklist, triage bar and guided tour](docs/review-page.png)
 
-### Recommended: the install script
+*The pages in these screenshots are a fictional demo review, generated with the real pipeline.*
 
-Claude Code auto-loads full plugins from `~/.claude/skills/` (global) and `<project>/.claude/skills/` (per project). The repo-root `install.sh` manages that for you:
+## Install
 
 ```bash
-./install.sh                 # global (symlink — 'git pull' is your update)
+git clone https://github.com/cmvl133/cc-review-plugin.git && cd cc-review-plugin
+./install.sh        # global, symlink — 'git pull' is your update
+```
+
+Requirements: `git`, `python3` (stdlib only — no pip installs), any modern browser.
+
+<details>
+<summary>Other install options</summary>
+
+```bash
 ./install.sh --local [DIR]   # only for one project (default: current git repo)
 ./install.sh --copy          # copy instead of symlink; re-run to update
 ./install.sh uninstall [--local [DIR]]
+claude --plugin-dir /path/to/cc-review-plugin   # one session only
 ```
 
 Symlink installs track this checkout live (restart the session after pulling); `--copy` is for when the checkout may move or you want a frozen version. The script is idempotent and refuses to overwrite anything at the target that isn't review-deck.
 
-### Alternatives
+Verify with `claude plugin details review-deck@skills-dir`: you should see the `/review`, `/respond`, `/hub` and `/chat` commands, the `code-reviewer` agent, and the `review-deck` skill.
 
-- **One session only:** `claude --plugin-dir /path/to/cc-review-plugin`
+</details>
 
-Verify with `claude plugin details review-deck@skills-dir` (script installs) or `claude --debug` / `/plugin`: you should see the `/review`, `/respond` and `/hub` commands, the `code-reviewer` agent, and the `review-deck` skill.
+## `/review` — generate the review page
 
-Requirements: `git`, `python3` (stdlib only — no pip installs), any modern browser.
+```
+/review                                  # staged changes, or working tree vs HEAD
+/review main...HEAD                      # a range
+/review abc1234                          # a single commit
+/review origin/main...HEAD --as-reviewer # someone else's change (see below)
+```
 
-## Usage
+Claude assembles a context brief (your plan, decisions, stated intent) and produces:
 
-### `/review [ref-or-range]`
+- an **overview** — what the change is, why it exists, where to start reading — with **mermaid diagrams** when there's a flow worth drawing;
+- explanatory **`info` notes**, written by the author session (it knows why each piece exists);
+- critique **`warning`/`suggestion` notes** from a fresh-eyes `code-reviewer` subagent that never sees your chat — findings go straight to a draft file, no JSON through the conversation;
+- a deterministic build: `build_review.py` merges the drafts and renders `review.html`, which opens in your browser.
 
-Generates the review page.
+![AI notes anchored to diff lines: a warning, an author info note, and a carried-over user comment](docs/ai-notes.png)
 
-- `/review` — reviews **staged changes** if any, otherwise working tree vs `HEAD`.
-- `/review main...HEAD` — reviews a range.
-- `/review abc1234` — reviews a single commit.
+With `--as-reviewer`, Claude stops assuming it authored the diff: it gathers context from the MR/PR description, commit messages and ticket references, and writes the explanatory notes in a neutral reviewer voice — for reviewing a colleague's MR you checked out.
 
-Claude assembles a context brief (your plan, decisions, stated intent), writes an **overview** — a reader's introduction at the top of the page: what the change is, why it exists, where the entry point is and how control flows from there, plus **mermaid diagrams** when the change has a flow worth drawing (a request path through a web app, a new pipeline; a config tweak gets no diagram). It writes explanatory `info` notes itself when it authored the changes (the author explaining intent) and delegates critique (`warning`/`suggestion`) to the fresh-eyes `code-reviewer` subagent, which writes its findings straight to a draft file — no note JSON round-trips through the conversation. The deterministic generator then merges the drafts into `notes.ai.json` (renumbering ids) and produces `review.html`, which opens in your browser.
+### Your attention is budgeted
 
-Diagrams render fully offline: a vendored `mermaid.min.js` is inlined into the page, and only when diagrams are present (~2.6 MB extra; diagram-free pages stay small). Diagrams follow the light/dark theme switch.
+AI-assisted work produces *a lot* of diff, so the page helps you spend reading time where it matters:
 
-Because AI-assisted work produces *a lot* of diff, Claude also budgets your attention:
-
-- **Triage** — every file is classified `risky` / `core` / `skim` / `mechanical` (with a reason). Files are sorted hardest-first, mechanical ones come collapsed, and a filter bar lets you view one class at a time (plus one click to mark all mechanical files viewed). Files whose changed logic has no test in the diff get an **untested** badge.
-- **Guided tour** — a sticky sidebar walking you through the diff in narrative order (entry point → core → periphery), each step deep-linking to the exact line, with prev/next.
-- **Plan ↔ implementation checklist** — each plan item marked ✓ done / ≈ partial / ✗ missing with a link to where it lives in the diff. Catches what the change silently didn't do.
+- **Triage** — every file classified `risky` / `core` / `skim` / `mechanical` (with a reason), sorted hardest-first; mechanical files come collapsed and one click marks them all viewed. Changed logic with no test in the diff gets an **untested** badge.
+- **Guided tour** — a sticky sidebar walking the diff in narrative order (entry point → core → periphery), deep-linking each step.
+- **Plan ↔ implementation checklist** — every plan item ✓ done / ≈ partial / ✗ missing. Catches what the change *silently didn't do*.
+- **Reading-time estimate** in the header, weighted by triage and ticking down as you mark files viewed.
 
 ### In the browser
 
-- Click any diff line (or press `c` on the focused line) to comment. Comments support edit, delete, and resolve.
-- Every AI note has a **Dismiss** button — mark a note you don't want the AI to act on. Dismissed notes are dimmed, ride along in the `comments.user.md` export, and both `/respond` and the next round's reviewer are instructed to leave them (and equivalent findings) alone. **Restore** un-dismisses.
-- **Saving comments**:
-  1. **Save to review folder / Connect review folder** (Chromium-only: Chrome, Edge, Brave, …) — pick the review round directory once; `comments.user.md` is written straight into it, and live from then on. The folder handle is remembered (IndexedDB), so on the next visit the page reconnects by itself — tick "Allow on every visit" in Chrome's permission prompt and it's fully automatic; otherwise it's one "Reconnect" click.
-  2. In browsers without the File System Access API (Firefox, Safari) the button falls back to **Export comments** — a plain download to move into the review directory yourself (a browser can't write to an arbitrary path without a user-granted handle). There is also **Copy as Markdown**.
-  - Either way, comments are buffered in `localStorage` keyed by review id, so closing the tab loses nothing.
-- Changed lines get **word-level highlighting** — the exact edited span inside a modified line pair lights up, so long lines read at a glance.
-- A **minimap** on the right edge shows change density plus note/comment markers across the whole diff — click or drag to jump.
-- The side panel has two tabs: the **guided tour** and a **findings digest** — every AI note sorted by severity with jump links and "handled" checkboxes.
-- Comments carry a **type** (`fix` / `question` / `nit` / `discuss`, plus one-click canned snippets) so `/respond` knows whether to patch, answer, or discuss. AI notes take **👍/👎** — downvotes teach the next round's reviewers what you consider noise.
-- The header shows an **estimated reading time left**, weighted by triage (mechanical files are nearly free) and ticking down as you mark files viewed.
-- Marking a file **Viewed** collapses it; `]` marks the current file viewed and jumps to the next unviewed one (`Shift+J`/`K` hop between files); the page also remembers your scroll position, so you resume exactly where you left off.
-- Themes: light / dark / solarized / high-contrast / Dracula / Nord / Gruvbox (dark & light) / Monokai / One Dark / Catppuccin (Mocha & Latte) / Tokyo Night / Rosé Pine / Everforest / Ayu Light / custom (color pickers), persisted. Switch freely — your eyes will thank you.
-- Keyboard: `j`/`k` hunks, `n`/`p` AI notes, `c` comment, `v` mark file viewed, `?` help.
-- The sticky header tracks files viewed, AI note count, and unresolved comments.
-- **Arcade mode** (the 🎮 button): earn XP for reviewing — viewing files, commenting, resolving, dismissing — with confetti, levels, an ALL FILES VIEWED celebration, and a **rubber duck** 🦆 that waddles along the diff as you review and quacks when you comment. XP accumulates across all your reviews. Entirely optional, entirely silly, off by default.
+- **Comment on any diff line** (click or `c`) — with a type (`fix` / `question` / `nit` / `discuss`) so `/respond` knows whether to patch, answer, or discuss.
+- **Dismiss an AI note** and neither `/respond` nor future review rounds will act on it or re-raise it. **👍/👎** on notes teaches the next round's reviewers what you consider signal vs noise.
+- **Save comments straight into the review folder** (Chromium: one-time folder pick, then automatic) or **Export**/**Copy as Markdown** elsewhere (Firefox, Safari). Everything is also buffered in `localStorage`, so closing the tab loses nothing.
+- **Word-level highlighting** inside modified line pairs; a **minimap** with change density and note/comment markers; a **findings digest** tab listing every note by severity with "handled" checkboxes.
+- **16 themes** (dark, light, solarized, Dracula, Nord, Gruvbox, Catppuccin, Tokyo Night, Rosé Pine, … plus custom color pickers), persisted.
+- **Arcade mode** 🎮 — entirely optional, entirely silly: XP for reviewing, levels, confetti, and a rubber duck 🦆 that waddles along the diff and quacks when you comment.
 
-### `/hub`
+| Key | Action | Key | Action |
+|-----|--------|-----|--------|
+| `j` / `k` | next / previous hunk | `c` | comment on focused line |
+| `n` / `p` | next / previous AI note | `v` | mark file viewed |
+| `Shift+J` / `K` | next / previous file | `]` | mark viewed + jump to next unviewed |
+| `?` | help | | |
 
-One page with **every review across all your projects**. Each `/review` run registers its page in a global registry (`~/.local/share/review-deck/registry.json`, or `$XDG_DATA_HOME/review-deck/`); `/hub` regenerates a self-contained `index.html` from it — reviews grouped by repo, with branch/round, note counts, unresolved-comment badges, last activity, and a direct link to each page — and opens it. No server, no daemon: a static page rebuilt on demand. Entries whose `review.html` was deleted are pruned automatically on every rebuild.
+## `/respond` — close the loop
 
-The hub opens with **Review Wrapped** — your last 7 days at a glance (reviews, projects, unresolved comments, hottest repo); arcade players also see their XP level there (all `file://` pages share localStorage, so the hub reads your stats with zero backend).
+Reads your exported comments, replies to each unresolved one in-chat, proposes/applies code changes where a comment asks for one (with your confirmation), and offers to run `/review` again. Unresolved comments carry over to the next round's page, flagged **"from previous round"**.
 
-**GitLab integration** (optional, works with self-hosted): the hub can list every open MR where you are assignee or reviewer — title, project reference, comment count, draft/conflict badges, your role, last update — fetched at rebuild time straight from the GitLab API (stdlib urllib, no dependencies). Configure once in `~/.local/share/review-deck/config.json`:
+## `/hub` — every review, one page
+
+Each `/review` registers its page in a local registry; `/hub` rebuilds a static `index.html` of all reviews across all your projects — grouped by repo, with note counts, unresolved-comment badges and last activity. No server, no daemon; entries whose page was deleted prune themselves.
+
+![The hub: Review Wrapped stats and reviews grouped by project](docs/hub.png)
+
+It opens with **Review Wrapped** — your last 7 days at a glance. Arcade players see their XP level there too.
+
+<details>
+<summary>Optional GitLab integration (works with self-hosted)</summary>
+
+The hub can list every open MR where you're assignee or reviewer — fetched at rebuild time straight from the GitLab API (stdlib urllib, no dependencies). Configure once in `~/.local/share/review-deck/config.json`:
 
 ```json
 {"gitlab": {"url": "https://gitlab.your.company", "token_env": "GITLAB_TOKEN"}}
 ```
 
-(`token` inline also works; `token_env` keeps the secret out of the file. `"insecure": true` skips TLS verification for self-signed setups.) No config → no section, no network.
+`token` inline also works; `token_env` keeps the secret out of the file. `"insecure": true` skips TLS verification for self-signed setups. No config → no section, no network.
 
-### `/chat` — talk to the session that wrote it (POC)
+</details>
 
-Every review registered since v0.6 captures the **id of the Claude Code session that generated it**. `/chat` starts a small local server (127.0.0.1, stdlib only) with a browser chat UI: pick any review — from any repository — and talk directly to its authoring session, with its full context ("why did you pick this pattern?", "what did we decide about X?"). Under the hood each chat is a long-lived `claude -p --resume <session-id> --input-format stream-json --output-format stream-json` subprocess (the same mechanism the Agent SDK uses), spawned in the session's original cwd and streamed to the browser via SSE.
+## `/chat` — talk to the session that wrote it (POC)
 
-- Works on Ubuntu and WSL alike (WSL2 forwards localhost, so the Windows browser reaches the Linux server directly).
-- While the server runs, the hub shows a **Chat** button next to every review that has a captured session.
-- POC safety: resumed sessions get read-only tools (`Read`, `Grep`, `Glob`) — they can inspect the repo and discuss, not edit.
-- This is the one opt-in component that is a server; everything else in review-deck stays static files. Stop it with `pkill -f deck_chat.py`.
+Every review captures the **id of the Claude Code session that generated it**. `/chat` starts a small local server (127.0.0.1, stdlib only) with a browser chat UI: pick any review — from any repo — and ask its authoring session directly ("why did you pick this pattern?"), with its full context. While it runs, the hub shows a **Chat** button next to every review.
 
-### Plugging in your own tooling
+Resumed sessions get read-only tools (`Read`, `Grep`, `Glob`) — they can inspect and discuss, not edit. This is the one opt-in component that is a server; stop it with `pkill -f deck_chat.py`.
 
-review-deck is a **sink for any pipeline that can write JSON**: your project's review workflows, agents, git hooks, CI jobs, or linter wrappers drop fragments (notes anchored by `file` + `line`, checklist items, triage, tour, overview) into `.code-review/<branch>/contrib/`, and the next `/review` merges them into the page with a per-tool source badge. Project defaults (diff base, pathspec excludes, custom reviewer agents) live in a committed `.claude/review-deck.json`. The full contract — fragment schema, merge semantics, a validator (`--validate-contrib`), and adapter examples — is one page: [INTEGRATIONS.md](INTEGRATIONS.md).
+## Plug in your own tooling
 
-### `/respond`
-
-Reads the newest `comments.user.md` for the current branch, replies to each unresolved comment in-chat, proposes/applies code changes where a comment asks for one (with your confirmation), and offers to run `/review` again. The next round's page carries over still-unresolved comments flagged **"from previous round"**.
+review-deck is a **sink for any pipeline that can write JSON**: workflows, git hooks, CI jobs or linter wrappers drop note fragments into `.code-review/<branch>/contrib/`, and the next `/review` merges them into the page with a per-tool source badge. Project defaults (diff base, excludes, custom reviewer agents) live in a committed `.claude/review-deck.json`. Full contract, validator and adapter examples: [INTEGRATIONS.md](INTEGRATIONS.md).
 
 ## The review directory
 
-Everything lives under `.code-review/` at the repo root (auto-added to `.gitignore` on every run):
+Everything lives under `.code-review/` at the repo root (auto-gitignored):
 
 ```
 .code-review/
@@ -113,24 +129,30 @@ Everything lives under `.code-review/` at the repo root (auto-added to `.gitigno
         └── comments.user.md     # your comments, exported from the page
 ```
 
-`comments.user.md` is plain, pleasant markdown — one `## <file> — hunk N` section per comment with the anchored line quoted, author, timestamp, and resolved status, preceded by a `## dismissed AI notes` list when you dismissed any notes.
+`comments.user.md` is plain, pleasant markdown — one section per comment with the anchored line quoted, author, timestamp and resolved status.
 
-## Design choices (where the spec left room)
+<details>
+<summary>Design choices (where the spec left room)</summary>
 
 - **The repo root is the plugin**: `.claude-plugin/plugin.json` sits at the top level next to `commands/`, `agents/` and `skills/`, so the checkout can be symlinked or `--plugin-dir`'d directly.
 - **AI notes are rendered into the HTML by the script** (server-side, visible without JS); **user comments are rendered client-side** from an embedded JSON blob merged with `localStorage` — the page is the comment editor, so it owns that state. Previous-round unresolved comments ride in via that blob, flagged and still editable/resolvable.
 - **Notes anchor to hunk index (1-based) + exact line content**, with whitespace-stripped and unique-substring fallbacks, then a cross-hunk search; failures render "unanchored" at the file top, never dropped.
 - **Determinism**: the script generates no timestamps or randomness; the default review id is a hash of the patch, so re-running on the same diff produces identical bytes and preserves your buffered comments.
-- **Mermaid is the one vendored dependency**: diagrams need a real renderer, so `assets/mermaid.min.js` (pinned, from jsDelivr) is inlined into pages that contain diagrams — keeping the zero-network-requests guarantee. Everything else stays hand-rolled.
+- **Mermaid is the one vendored dependency**: diagrams need a real renderer, so `assets/mermaid.min.js` (pinned, from jsDelivr) is inlined into pages that contain diagrams (~2.6 MB; diagram-free pages stay small) — keeping the zero-network-requests guarantee. Everything else stays hand-rolled.
 - **The hub is a static page, not a service**: `build_hub.py` keeps `registry.json` + `index.html` under `$XDG_DATA_HOME/review-deck/` and rebuilds on demand; dead entries self-prune. Registration is local metadata only (paths and counts — no code leaves your machine).
-- **Syntax highlighting** is a ~120-line per-line tokenizer (keywords / strings / comments / numbers) with language families (python, C-like, ruby, shell, sql, css, json, yaml, html) picked by file extension. Multi-line block comments don't carry highlight state across lines — a deliberate simplicity trade-off.
+- **Syntax highlighting** is a ~120-line per-line tokenizer (keywords / strings / comments / numbers) with language families picked by file extension. Multi-line block comments don't carry highlight state across lines — a deliberate simplicity trade-off.
 - The raw diff is kept as `changes.patch` in each round dir (not in the spec's file list, but essential for reproducing the page and for `/respond` context).
 - A body line consisting solely of `---` inside a comment is escaped on export (`\---`) so it can't terminate the section early.
 
-## Limitations
+</details>
+
+<details>
+<summary>Limitations</summary>
 
 - File System Access API is Chromium-only; everyone else uses Export/Copy.
-- The embedded tokenizer is approximate by design (~200-line budget) — it's a reading aid, not a compiler.
-- Comment bodies are treated as plain text in the page (rendered with whitespace preserved), and parsed leniently from `comments.user.md`.
-- A review page with diagrams carries the inlined mermaid renderer (~2.6 MB). If a diagram's mermaid source fails to parse, it falls back to mermaid's inline error rendering — fix the source in `notes.ai.json` and re-run the build.
-- The hub's `index.html` links reviews via `file://`, so it lists reviews from this machine only.
+- The embedded tokenizer is approximate by design — a reading aid, not a compiler.
+- Comment bodies are treated as plain text in the page and parsed leniently from `comments.user.md`.
+- A page with diagrams carries the inlined mermaid renderer (~2.6 MB). If a diagram's source fails to parse, mermaid renders its inline error — fix the source in `notes.ai.json` and re-run the build.
+- The hub links reviews via `file://`, so it lists reviews from this machine only.
+
+</details>
