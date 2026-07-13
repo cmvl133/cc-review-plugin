@@ -1,6 +1,6 @@
 ---
 description: Generate an interactive HTML code review of a git diff, with AI notes
-argument-hint: "[ref-or-range]"
+argument-hint: "[ref-or-range] [--as-reviewer]"
 ---
 
 Generate an interactive HTML code review page for a git diff. Follow these steps exactly. Read `${CLAUDE_PLUGIN_ROOT}/skills/review-deck/SKILL.md` first if you have not already this session — it defines the directory layout, the notes JSON schema, and the anchoring rules you must follow.
@@ -15,6 +15,7 @@ Read `<repo-root>/.claude/review-deck.json` if it exists (all keys optional — 
 
 Argument given: `$ARGUMENTS`
 
+- If the arguments contain `--as-reviewer`, you are in **reviewer mode**: the user did not author this change (e.g. a colleague's MR) and wants to review it. Strip the flag; the rest is the ref/range. Without the flag you are in **author mode** (today's behavior). The mode changes steps 3a and 3c only.
 - If an argument was given, treat it as a ref or range and diff it: `git diff <arg>` (works for `main...HEAD`, a single commit hash — for a single commit prefer `git diff <hash>^ <hash>` — or any range).
 - If no argument: check `git diff --cached --stat`. If there are staged changes, use `git diff --cached`. Otherwise, if the working tree is dirty, use `git diff HEAD` (working tree vs HEAD). Otherwise, if config `base` is set and the current branch differs from it, use `git diff <base>...HEAD`.
 - If config `exclude` is set, append the pathspec to every diff command: `-- . ':(exclude)<pattern>'` for each pattern.
@@ -31,7 +32,10 @@ Argument given: `$ARGUMENTS`
 
 You are the conductor: you may hold context the subagent cannot see.
 
-**3a. Assemble a context brief** (under ~500 words) containing, when available: the implementation plan (from this conversation, a plan file, or CLAUDE.md), key decisions and their rationale, the methodology in use, and anything the user said about intent. If nothing is available (foreign/historical diff), assemble what you can from the repo (README, recent commit messages) and say so in the brief.
+**3a. Assemble a context brief** (under ~500 words).
+
+- **Author mode:** the brief contains, when available: the implementation plan (from this conversation, a plan file, or CLAUDE.md), key decisions and their rationale, the methodology in use, and anything the user said about intent. If nothing is available (foreign/historical diff), assemble what you can from the repo (README, recent commit messages) and say so in the brief.
+- **Reviewer mode:** actively gather context about the change instead — the session holds none. In order of value: the commit messages of the reviewed range (`git log --format='%h %s%n%b' <range>`); the MR/PR description if obtainable (`glab mr view` / `gh pr view` for the current branch — best effort, skip silently if the CLI is missing or errors); ticket ids referenced in the branch name or commits; README/CLAUDE.md for project conventions. Open the brief by stating this is someone else's change being reviewed on behalf of the user, cite where each piece of context came from, and leave unknown intent unknown — never fill gaps with guesses.
 
 **3b. Overview, triage, tour, checklist** — semantics and schemas are in SKILL.md; scale each to the diff and omit what a small diff doesn't need:
 
@@ -43,6 +47,8 @@ You are the conductor: you may hold context the subagent cannot see.
 **Large diffs** (roughly >15 files or >400 changed lines): do not read the whole patch into context. Triage from `git diff --numstat` plus the hunk headers (`grep -n '^diff --git\|^@@' changes.patch`), then read only the hunks of files you will actually annotate (`risky`/`core`). `skim`/`mechanical` files need no full-text read.
 
 **3c. Explanatory notes (`info`)** — if the changes were authored in this session or you have a plan/context: write these yourself, as the author explaining intent. One note per meaningful piece of the change: what it does and *why it exists*. Do not delegate these — a context-free agent would only guess at intent. If you have no context at all, skip this step (the subagent covers it in 3d).
+
+In **reviewer mode**, still write these yourself, but in a neutral reviewer voice, not the author's: what each piece does, and its apparent purpose *only when the gathered context (MR description, commit message) states it* — cite the source ("per the MR description, …"). Mark anything inferred as an assumption.
 
 **3d. Critique notes (`warning`/`suggestion`)** — first check the previous round's `comments.user.md` (found as in step 4) for a `## dismissed AI notes` section (findings the user explicitly closed) and a `## note reactions` section (👍/👎 calibration: downvoted notes were noise — tell the reviewers what kinds of notes to avoid; upvoted kinds are worth reinforcing). Then launch the reviewer agents **in parallel**:
 
